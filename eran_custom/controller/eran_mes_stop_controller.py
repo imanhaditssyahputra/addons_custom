@@ -232,17 +232,370 @@ class MesScanController(http.Controller):
         return request.make_response(html)
 
     # ===================================
+    # VERIFY OUTPUT
+    # ===================================
+
+    @http.route(
+        "/mes/stop/<int:line_id>/verify-output",
+        type="http",
+        auth="user"
+    )
+    def mes_verify_output(self, line_id, qty=None, **kwargs):
+
+        line = request.env[
+            "mes.scan.approval.line"
+        ].sudo().browse(line_id)
+
+        if not line.exists():
+            return self._info_page(
+                "Gagal",
+                f"Line ID {line_id} tidak ditemukan.",
+                color="#dc3545",
+            )
+
+        # ===================================
+        # VALIDASI QTY
+        # ===================================
+
+        try:
+            qty_value = float(qty) if qty else 0.0
+        except (ValueError, TypeError):
+            return self._info_page(
+                "Gagal",
+                "Jumlah produksi tidak valid.",
+                color="#dc3545",
+            )
+
+        if qty_value <= 0:
+            return self._info_page(
+                "Gagal",
+                "Jumlah hasil produksi harus lebih dari 0.",
+                color="#dc3545",
+            )
+
+        # ===================================
+        # POPUP VERIFIKASI PERTAMA
+        # ===================================
+
+        html = f"""
+        <html>
+        <head>
+            <meta charset="utf-8"/>
+            <title>Verifikasi Output</title>
+        </head>
+
+        <body style="
+            font-family:-apple-system,Arial,sans-serif;
+            background:#f4f4f4;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            height:100vh;
+            margin:0;
+        ">
+
+            <div style="
+                background:white;
+                border-radius:12px;
+                padding:30px;
+                box-shadow:0 4px 20px rgba(0,0,0,0.15);
+                width:340px;
+                text-align:center;
+            ">
+
+                <div style="
+                    font-size:42px;
+                    margin-bottom:10px;
+                ">
+                    ⚠️
+                </div>
+
+                <h3 style="
+                    margin:0 0 12px 0;
+                ">
+                    Verifikasi Output
+                </h3>
+
+                <p style="
+                    color:#777;
+                    font-size:13px;
+                ">
+                    {line.workorder_id.name}
+                    —
+                    {line.workorder_id.production_id.name}
+                </p>
+
+                <div style="
+                    margin:20px 0;
+                    padding:18px;
+                    background:#f8f9fa;
+                    border-radius:8px;
+                ">
+
+                    <div style="
+                        font-size:13px;
+                        color:#777;
+                        margin-bottom:5px;
+                    ">
+                        Output yang Anda masukkan
+                    </div>
+
+                    <div style="
+                        font-size:32px;
+                        font-weight:bold;
+                        color:#0b72b9;
+                    ">
+                        {qty_value:g} PCS
+                    </div>
+
+                </div>
+
+                <p style="
+                    font-size:16px;
+                    font-weight:bold;
+                    color:#333;
+                    margin-bottom:22px;
+                ">
+                    Apakah Output Sudah Sesuai?
+                </p>
+
+                <a href="/mes/stop/{line.id}/qty"
+                    style="
+                        display:inline-block;
+                        width:42%;
+                        padding:13px 5px;
+                        margin:4px;
+                        background:#dc3545;
+                        color:white;
+                        border-radius:6px;
+                        text-decoration:none;
+                        font-weight:bold;
+                        box-sizing:border-box;
+                    ">
+                    TIDAK
+                </a>
+
+                <a href="/mes/stop/{line.id}/verify-final?qty={qty_value}"
+                    style="
+                        display:inline-block;
+                        width:42%;
+                        padding:13px 5px;
+                        margin:4px;
+                        background:#28a745;
+                        color:white;
+                        border-radius:6px;
+                        text-decoration:none;
+                        font-weight:bold;
+                        box-sizing:border-box;
+                    ">
+                    IYA
+                </a>
+
+            </div>
+
+        </body>
+        </html>
+        """
+
+        return request.make_response(html)
+
+    # ===================================
+    # VERIFY FINAL
+    # ===================================
+
+    @http.route(
+        "/mes/stop/<int:line_id>/verify-final",
+        type="http",
+        auth="user"
+    )
+    def mes_verify_final(self, line_id, qty=None, **kwargs):
+
+        line = request.env[
+            "mes.scan.approval.line"
+        ].sudo().browse(line_id)
+
+        if not line.exists():
+            return self._info_page(
+                "Gagal",
+                f"Line ID {line_id} tidak ditemukan.",
+                color="#dc3545",
+            )
+
+        # ===================================
+        # VALIDASI QTY
+        # ===================================
+
+        try:
+            qty_value = float(qty) if qty else 0.0
+        except (ValueError, TypeError):
+            return self._info_page(
+                "Gagal",
+                "Jumlah produksi tidak valid.",
+                color="#dc3545",
+            )
+
+        if qty_value <= 0:
+            return self._info_page(
+                "Gagal",
+                "Jumlah hasil produksi harus lebih dari 0.",
+                color="#dc3545",
+            )
+
+        # ===================================
+        # VERIFIKASI KEDUA
+        # ===================================
+
+        html = f"""
+        <html>
+        <head>
+            <meta charset="utf-8"/>
+            <title>Konfirmasi Akhir</title>
+        </head>
+
+        <body style="
+            font-family:-apple-system,Arial,sans-serif;
+            background:#f4f4f4;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            height:100vh;
+            margin:0;
+        ">
+
+            <div style="
+                background:white;
+                border-radius:12px;
+                padding:30px;
+                box-shadow:0 4px 20px rgba(0,0,0,0.15);
+                width:340px;
+                text-align:center;
+            ">
+
+                <div style="
+                    font-size:42px;
+                    margin-bottom:10px;
+                ">
+                    🔒
+                </div>
+
+                <h3 style="
+                    margin:0 0 12px 0;
+                ">
+                    Konfirmasi Akhir
+                </h3>
+
+                <p style="
+                    color:#777;
+                    font-size:13px;
+                ">
+                    {line.workorder_id.name}
+                    —
+                    {line.workorder_id.production_id.name}
+                </p>
+
+                <div style="
+                    margin:20px 0;
+                    padding:18px;
+                    background:#f8f9fa;
+                    border-radius:8px;
+                ">
+
+                    <div style="
+                        font-size:13px;
+                        color:#777;
+                        margin-bottom:5px;
+                    ">
+                        Output yang akan disimpan
+                    </div>
+
+                    <div style="
+                        font-size:32px;
+                        font-weight:bold;
+                        color:#28a745;
+                    ">
+                        {qty_value:g} PCS
+                    </div>
+
+                </div>
+
+                <p style="
+                    font-size:16px;
+                    font-weight:bold;
+                    color:#333;
+                    margin-bottom:8px;
+                ">
+                    Apakah Anda Sudah Yakin?
+                </p>
+
+                <p style="
+                    color:#777;
+                    font-size:13px;
+                    margin-bottom:22px;
+                ">
+                    Setelah memilih YAKIN, output akan dicatat
+                    ke hasil produksi.
+                </p>
+
+                <a href="/mes/stop/{line.id}/qty"
+                    style="
+                        display:inline-block;
+                        width:42%;
+                        padding:13px 5px;
+                        margin:4px;
+                        background:#6c757d;
+                        color:white;
+                        border-radius:6px;
+                        text-decoration:none;
+                        font-weight:bold;
+                        box-sizing:border-box;
+                    ">
+                    BATAL
+                </a>
+
+                <a href="/mes/stop/{line.id}/confirm?reason=done&qty={qty_value}&final_confirm=1"
+                    style="
+                        display:inline-block;
+                        width:48%;
+                        padding:13px 5px;
+                        margin:4px;
+                        background:#28a745;
+                        color:white;
+                        border-radius:6px;
+                        text-decoration:none;
+                        font-weight:bold;
+                        box-sizing:border-box;
+                    ">
+                    YAKIN & SIMPAN
+                </a>
+
+            </div>
+
+        </body>
+        </html>
+        """
+
+        return request.make_response(html)
+    
+
+    # ===================================
     # STOP CONFIRM
     # ===================================
 
     @http.route("/mes/stop/<int:line_id>/confirm", type="http", auth="user")
-    def mes_stop_confirm(self, line_id, reason=None, note=None, qty=None, loss_id=None, **kwargs):
+    def mes_stop_confirm(self, line_id, reason=None, note=None, qty=None, loss_id=None, final_confirm=None, **kwargs):
         line = request.env["mes.scan.approval.line"].sudo().browse(line_id)
 
         if not line.exists():
             return self._info_page("Gagal", f"Line ID {line_id} tidak ditemukan.", color="#dc3545")
 
         if reason not in ("stop", "done"):
+            if reason == "done" and final_confirm != "1":
+                return self._info_page(
+                    "Verifikasi Diperlukan",
+                    "Output harus melewati dua tahap verifikasi "
+                    "sebelum dapat disimpan.",
+                    color="#dc3545",
+                )
             return self._info_page("Gagal", "Alasan tidak valid.", color="#dc3545")
 
         if reason == "done":
@@ -331,7 +684,7 @@ class MesScanController(http.Controller):
                     Target: {line.qty_target}
                 </p>
 
-                <form id="qtyForm" action="/mes/stop/{line.id}/confirm" method="get">
+                <form id="qtyForm" action="/mes/stop/{line.id}/verify-output" method="get">
                     <input type="hidden" name="reason" value="done"/>
 
                     <label style="display:block;text-align:left;font-size:13px;

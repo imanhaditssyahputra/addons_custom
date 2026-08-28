@@ -38,7 +38,8 @@ const mesEditRequestNotificationService = {
                     // REQUEST EDIT BARU
                     // =================================================
 
-                    if (type === "mes_edit_request") {
+                    // Request utama ditangani oleh popup custom di mes_edit_request.js.
+                    if (false && type === "mes_edit_request") {
 
                         console.log(
                             "MES EDIT REQUEST RECEIVED:",
@@ -154,6 +155,30 @@ const mesEditRequestNotificationService = {
                                         : "danger",
 
                                 sticky: false,
+                            }
+                        );
+                    }
+
+                    // =================================================
+                    // PENGAJUAN MEMO KE IT (KHUSUS ADMIN)
+                    // =================================================
+
+                    if (type === "mes_edit_request_admin_memo") {
+                        let closeNotification;
+                        closeNotification = notification.add(
+                            payload.message ||
+                            "Ada pengajuan memo dari Produksi terkait perubahan data.",
+                            {
+                                title: payload.title || "Pengajuan Memo Perubahan Data",
+                                type: "warning",
+                                sticky: true,
+                                buttons: [
+                                    {
+                                        name: "OK",
+                                        primary: true,
+                                        onClick: () => closeNotification(),
+                                    },
+                                ],
                             }
                         );
                     }

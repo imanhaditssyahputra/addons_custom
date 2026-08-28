@@ -1038,11 +1038,18 @@ class MesScanApprovalLine(models.Model):
 
     has_pending_edit = fields.Boolean(compute="_compute_has_pending_edit")
 
-    @api.depends("edit_request_ids", "edit_request_ids.state")
+    @api.depends(
+        "edit_request_ids",
+        "edit_request_ids.state"
+    )
     def _compute_has_pending_edit(self):
+
         for line in self:
+
             line.has_pending_edit = bool(
-                line.edit_request_ids.filtered(lambda r: r.state == "waiting")
+                line.edit_request_ids.filtered(
+                    lambda r: r.state == "waiting"
+                )
             )
 
 class MesScanApprovalLineDowntime(models.Model):
@@ -1288,8 +1295,9 @@ class MesScanController(http.Controller):
                         {line.workorder_id.name} — {line.workorder_id.production_id.name}
                     </p>
                     <p style="color:#555;font-size:13px;margin-bottom:20px;">
-                        Permintaan edit akan dikirim ke Admin/Leader untuk disetujui
-                        sebelum output aktual bisa diubah.
+                        Permintaan edit akan dikirim ke Leader untuk disetujui.
+                        Setelah disetujui, Leader akan membuat Memo ke Tim IT
+                        untuk proses perubahan quantity.
                     </p>
     
                     <a href="/mes/edit/{line.id}/request"
@@ -1453,12 +1461,12 @@ class MesScanApprovalEditRequest(models.Model):
     )
 
     new_qty = fields.Float(
-        string="Output Aktual Baru",
+        string="Quantity Perubahan",
     )
 
     state = fields.Selection([
         ("waiting", "Menunggu Persetujuan"),
-        ("approved", "Disetujui"),
+        ("approved", "Disetujui oleh Leader"),
         ("rejected", "Ditolak"),
     ], default="waiting", required=True)
 
@@ -1469,6 +1477,12 @@ class MesScanApprovalEditRequest(models.Model):
     )
 
     approved_date = fields.Datetime(
+        readonly=True,
+    )
+
+    memo_notified = fields.Boolean(
+        string="Notifikasi Memo Terkirim",
+        default=False,
         readonly=True,
     )
 
@@ -1697,18 +1711,10 @@ class MesScanApprovalEditRequest(models.Model):
     def action_approve(self):
         self.ensure_one()
 
-        # -----------------------------------------------------
-        # 1. REQUEST HARUS MASIH WAITING
-        # -----------------------------------------------------
-
         if self.state != "waiting":
             raise UserError(
                 "Request ini sudah diproses sebelumnya."
             )
-
-        # -----------------------------------------------------
-        # 2. VALIDASI LEADER
-        # -----------------------------------------------------
 
         leader_user = self._get_leader_user()
 
@@ -1723,35 +1729,9 @@ class MesScanApprovalEditRequest(models.Model):
                 "Hanya Leader yang dapat menyetujui request edit."
             )
 
-        # -----------------------------------------------------
-        # 3. VALIDASI QTY
-        # -----------------------------------------------------
-
-        if self.new_qty <= 0:
-            raise UserError(
-                "Isi jumlah output aktual yang benar terlebih dahulu."
-            )
-
-        # -----------------------------------------------------
-        # 4. UPDATE DATA
-        # -----------------------------------------------------
-
-        line = self.line_id.sudo()
-        production = line.workorder_id.production_id.sudo()
-
-        diff = self.new_qty - line.qty_actual
-
-        production.write({
-            "good_total": production.good_total + diff,
-        })
-
-        line.write({
-            "qty_actual": self.new_qty,
-        })
-
-        # -----------------------------------------------------
-        # 5. SIMPAN APPROVAL
-        # -----------------------------------------------------
+        # =====================================================
+        # APPROVE REQUEST
+        # =====================================================
 
         self.write({
             "state": "approved",
@@ -1759,14 +1739,30 @@ class MesScanApprovalEditRequest(models.Model):
             "approved_date": fields.Datetime.now(),
         })
 
-        # -----------------------------------------------------
-        # 6. NOTIFIKASI OPERATOR
-        # -----------------------------------------------------
+        # =====================================================
+        # NOTIFIKASI KE OPERATOR
+        # =====================================================
 
         self._send_operator_result_notification(
             "approved"
         )
 
+        # Notifikasi admin dikirim setelah Leader menekan OK pada popup Memo IT.
+        return True
+
+    def action_confirm_it_memo(self):
+        """Konfirmasi Leader untuk mengirim pengajuan memo ke admin."""
+        self.ensure_one()
+
+        leader_user = self._get_leader_user()
+        if self.env.user != leader_user:
+            raise UserError("Hanya Leader Work Order yang dapat mengonfirmasi Memo IT.")
+        if self.state != "approved":
+            raise UserError("Request edit harus disetujui terlebih dahulu.")
+
+        if not self.memo_notified:
+            self._send_admin_memo_notification()
+            self.write({"memo_notified": True})
         return True
 
     # =========================================================
@@ -1836,29 +1832,35 @@ class MesScanApprovalEditRequest(models.Model):
 
         self.ensure_one()
 
-        approval = self.line_id.approval_id
+        approval = self.line_id.sudo().approval_id.sudo()
 
         if not approval or not approval.employee_id:
             return
 
-        operator_employee = approval.employee_id
-
-        operator_user = operator_employee.user_id
+        # Akses employee harus sudo: tanpa itu Odoo dapat memakai model
+        # hr.employee.public yang tidak mengenal field custom barcode_id.
+        operator_employee = approval.employee_id.sudo()
+        operator_user = operator_employee.user_id.sudo()
 
         if not operator_user or not operator_user.partner_id:
             return
 
+        # Work Order tidak dapat dibaca oleh semua akun Leader. Karena hanya
+        # dipakai sebagai isi pesan, gunakan akses internal untuk relasinya.
+        workorder_name = self.workorder_id.sudo().name or "-"
+        approver_name = self.approved_by.sudo().name or "-"
+
         if result == "approved":
             title = "✅ Edit Disetujui"
             message = (
-                f"Request edit {self.workorder_id.name} "
-                f"telah disetujui oleh {self.approved_by.name}."
+                f"Request edit {workorder_name} "
+                f"telah disetujui oleh {approver_name}."
             )
         else:
             title = "❌ Edit Ditolak"
             message = (
-                f"Request edit {self.workorder_id.name} "
-                f"ditolak oleh {self.approved_by.name}."
+                f"Request edit {workorder_name} "
+                f"ditolak oleh {approver_name}."
             )
 
         self.env["bus.bus"]._sendone(
@@ -1870,5 +1872,134 @@ class MesScanApprovalEditRequest(models.Model):
                 "message": message,
                 "state": result,
             },
+        )
+
+    # ========================================================
+    # VERIFIKASI LEADER APPROVED, BUAT MEMO IT
+    # ========================================================
+    
+    def _send_memo_it_notification(self):
+        """
+        Memberikan instruksi kepada Leader bahwa request
+        sudah disetujui dan perlu dibuatkan Memo ke Tim IT.
+        """
+
+        self.ensure_one()
+
+        leader_user = self._get_leader_user()
+
+        if not leader_user:
+            _logger.warning(
+                "MES EDIT REQUEST: Leader tidak ditemukan "
+                "untuk Memo IT. request_id=%s",
+                self.id,
+            )
+            return
+
+        if not leader_user.partner_id:
+            _logger.warning(
+                "MES EDIT REQUEST: Leader tidak memiliki partner. "
+                "request_id=%s",
+                self.id,
+            )
+            return
+
+        line = self.line_id.sudo()
+        wo = self.workorder_id.sudo()
+        production = wo.production_id.sudo()
+
+        payload = {
+            "request_id": self.id,
+
+            "operator_name": (
+                self.requested_by.sudo().name
+                if self.requested_by
+                else "-"
+            ),
+
+            "leader_name": (
+                self.leader_id.sudo().name
+                if self.leader_id
+                else "-"
+            ),
+
+            "workorder_name": (
+                wo.name
+                if wo
+                else "-"
+            ),
+
+            "production_name": (
+                production.name
+                if production
+                else "-"
+            ),
+
+            "product_name": (
+                wo.product_id.sudo().display_name
+                if wo and wo.product_id
+                else "-"
+            ),
+
+            "current_qty": line.qty_actual,
+
+            "state": "approved",
+
+            "action": "create_it_memo",
+        }
+
+        self.env["bus.bus"]._sendone(
+            leader_user.partner_id,
+            "mes_edit_request_approved",
+            payload,
+        )
+
+        _logger.info(
+            "MES EDIT REQUEST: instruksi Memo IT dikirim "
+            "ke Leader %s, request_id=%s",
+            leader_user.name,
+            self.id,
+        )
+
+    def _send_admin_memo_notification(self):
+        """Kirim pengingat memo ke seluruh user administrator aktif."""
+
+        self.ensure_one()
+
+        admin_group = self.env.ref("base.group_system", raise_if_not_found=False)
+        admin_users = admin_group.sudo().users.filtered(
+            lambda user: user.active and user.partner_id
+        ) if admin_group else self.env["res.users"]
+
+        if not admin_users:
+            _logger.warning(
+                "MES EDIT REQUEST: Tidak ada user admin aktif untuk request_id=%s",
+                self.id,
+            )
+            return
+
+        workorder = self.workorder_id.sudo()
+        production_name = workorder.production_id.sudo().name or "-"
+        workorder_name = workorder.name or "-"
+        payload = {
+            "request_id": self.id,
+            "title": "Pengajuan Memo Perubahan Data",
+            "message": (
+                "Ada pengajuan memo dari Produksi terkait perubahan data "
+                f"(MO: {production_name}; Work Order: {workorder_name})."
+            ),
+        }
+
+        for admin_user in admin_users:
+            self.env["bus.bus"]._sendone(
+                admin_user.partner_id,
+                "mes_edit_request_admin_memo",
+                payload,
+            )
+
+        _logger.info(
+            "MES EDIT REQUEST: notifikasi memo dikirim ke %s admin, request_id=%s",
+            len(admin_users),
+            self.id,
         )
 

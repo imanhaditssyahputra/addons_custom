@@ -3,9 +3,9 @@
 import { registry } from "@web/core/registry";
 
 const mesEditRequestService = {
-    dependencies: ["bus_service", "notification"],
+    dependencies: ["bus_service", "notification", "orm"],
 
-    start(env, { bus_service, notification }) {
+    start(env, { bus_service, notification, orm }) {
 
         console.log(
             "=========================================="
@@ -64,9 +64,7 @@ const mesEditRequestService = {
                             payload
                         );
 
-                        showEditRequestPopup(
-                            payload
-                        );
+                        showEditRequestPopup(payload, orm, notification);
                     }
                 }
             }
@@ -95,7 +93,7 @@ registry
 // POPUP
 // =============================================================
 
-function showEditRequestPopup(payload) {
+function showEditRequestPopup(payload, orm, notification) {
 
     // Jangan tampilkan popup dua kali
     const existing = document.getElementById(
@@ -387,7 +385,7 @@ function showEditRequestPopup(payload) {
         document.createElement("button");
 
     approveButton.innerText =
-        "✅ Buka Approval";
+        "Setujui";
 
     approveButton.style.padding =
         "9px 18px";
@@ -412,42 +410,38 @@ function showEditRequestPopup(payload) {
     // BUTTON ACTION
     // =========================================================
 
-    rejectButton.onclick = () => {
+    rejectButton.onclick = async () => {
 
         console.log(
             "Reject clicked:",
             payload.request_id
         );
 
-        backdrop.remove();
-
-        notification.add(
-            "Request edit ditutup.",
-            {
-                title: "MES",
-                type: "warning",
-            }
-        );
+        try {
+            await orm.call("mes.scan.approval.edit.request", "action_reject", [[payload.request_id]]);
+            backdrop.remove();
+        } catch (error) {
+            notification.add(error.message || "Request edit gagal ditolak.", { type: "danger" });
+        }
     };
 
 
-    approveButton.onclick = () => {
+    approveButton.onclick = async () => {
 
         console.log(
             "Open approval:",
             payload.request_id
         );
 
-        backdrop.remove();
-
-        // Untuk tahap pertama:
-        // buka record request edit di Odoo
-
-        window.location.href =
-            "/web#id=" +
-            payload.request_id +
-            "&model=mes.scan.approval.edit.request" +
-            "&view_type=form";
+        try {
+            approveButton.disabled = true;
+            await orm.call("mes.scan.approval.edit.request", "action_approve", [[payload.request_id]]);
+            backdrop.remove();
+            showMemoReminderPopup(payload, orm, notification);
+        } catch (error) {
+            approveButton.disabled = false;
+            notification.add(error.message || "Request edit gagal disetujui.", { type: "danger" });
+        }
     };
 
 
@@ -485,6 +479,58 @@ function showEditRequestPopup(payload) {
     );
 }
 
+
+// =============================================================
+// POPUP PENGINGAT MEMO IT
+// =============================================================
+
+function showMemoReminderPopup(payload, orm, notification) {
+    const backdrop = document.createElement("div");
+    backdrop.id = "mes-memo-reminder-popup";
+    Object.assign(backdrop.style, {
+        position: "fixed", inset: "0", background: "rgba(0,0,0,0.55)",
+        zIndex: "99999", display: "flex", alignItems: "center", justifyContent: "center",
+    });
+
+    const popup = document.createElement("div");
+    Object.assign(popup.style, {
+        width: "440px", maxWidth: "90vw", background: "white", borderRadius: "12px",
+        boxShadow: "0 10px 40px rgba(0,0,0,0.35)", overflow: "hidden", fontFamily: "Arial, sans-serif",
+    });
+    popup.innerHTML = `
+        <div style="background:#0b72b9;color:white;padding:18px 22px;font-size:20px;font-weight:bold">
+            Request Edit Disetujui
+        </div>
+        <div style="padding:28px 22px;font-size:16px;line-height:1.5">
+            Segera Buat Memo ke Tim IT Untuk Perubahan Data.
+        </div>`;
+
+    const footer = document.createElement("div");
+    Object.assign(footer.style, {
+        padding: "15px 22px", borderTop: "1px solid #eee", textAlign: "right",
+    });
+    const okButton = document.createElement("button");
+    okButton.innerText = "OK";
+    Object.assign(okButton.style, {
+        padding: "9px 22px", border: "none", borderRadius: "6px", background: "#28a745",
+        color: "white", cursor: "pointer",
+    });
+    okButton.onclick = async () => {
+        try {
+            okButton.disabled = true;
+            await orm.call("mes.scan.approval.edit.request", "action_confirm_it_memo", [[payload.request_id]]);
+            backdrop.remove();
+        } catch (error) {
+            okButton.disabled = false;
+            notification.add(error.message || "Notifikasi admin gagal dikirim.", { type: "danger" });
+        }
+    };
+
+    footer.appendChild(okButton);
+    popup.appendChild(footer);
+    backdrop.appendChild(popup);
+    document.body.appendChild(backdrop);
+}
 
 // =============================================================
 // ESCAPE HTML

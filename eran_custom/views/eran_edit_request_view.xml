@@ -21,14 +21,25 @@
         <field name="arch" type="xml">
             <form>
                 <header>
-                    <button name="action_approve" string="Setujui &amp; Terapkan"
-                        type="object" class="btn-primary"
-                        invisible="state != 'waiting'"/>
-                    <button name="action_reject" string="Tolak"
-                        type="object" class="btn-danger"
-                        invisible="state != 'waiting'"/>
-                    <field name="state" widget="statusbar" statusbar_visible="waiting,approved"/>
+
+                    <button name="action_approve"
+                        string="Setujui &amp; Terapkan"
+                        type="object"
+                        class="btn-primary"
+                        attrs="{'invisible': [('state', '!=', 'waiting')]}"/>
+
+                    <button name="action_reject"
+                        string="Tolak"
+                        type="object"
+                        class="btn-danger"
+                        attrs="{'invisible': [('state', '!=', 'waiting')]}"/>
+
+                    <field name="state"
+                        widget="statusbar"
+                        statusbar_visible="waiting,approved"/>
+
                 </header>
+
                 <sheet>
                     <group>
                         <field name="requested_by"/>
@@ -37,10 +48,12 @@
                         <field name="new_qty" placeholder="Masukkan jumlah output aktual yang benar"/>
                         <field name="note"/>
                     </group>
-                    <group invisible="state == 'waiting'">
+
+                    <group attrs="{'invisible': [('state', '=', 'waiting')]}">
                         <field name="approved_by"/>
                         <field name="approved_date"/>
                     </group>
+
                 </sheet>
             </form>
         </field>

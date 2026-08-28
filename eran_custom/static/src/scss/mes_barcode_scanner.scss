@@ -1,0 +1,22 @@
+// Gunakan hampir seluruh layar untuk preview barcode di desktop maupun tablet.
+.modal.o_modal_full .modal-dialog {
+    width: 96vw;
+    max-width: 1400px;
+    height: 92vh;
+    margin: 4vh auto;
+}
+
+.modal.o_modal_full .o-barcode-modal {
+    height: 100%;
+}
+
+.modal.o_modal_full .o-barcode-modal > .modal-body {
+    height: calc(92vh - 58px);
+    padding: 0;
+}
+
+.modal.o_modal_full .o-barcode-modal .o_crop_container,
+.modal.o_modal_full .o-barcode-modal video {
+    width: 100%;
+    height: 100%;
+}
