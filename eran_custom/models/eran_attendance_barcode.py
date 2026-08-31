@@ -119,6 +119,24 @@ class MesScanApproval(models.Model):
         sanitize=False,
     )
 
+    def action_open_my_mo_history(self):
+        """Buka riwayat MO hanya untuk operator pada hasil scan ini."""
+
+        self.ensure_one()
+        employee = self.employee_id.sudo()
+
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Riwayat MO - %s" % (employee.name or "-"),
+            "res_model": "mes.scan.approval",
+            "view_mode": "tree,form",
+            "domain": [("employee_id", "=", employee.id)],
+            "context": {
+                "group_by": "scan_time:day",
+                "default_employee_id": employee.id,
+            },
+        }
+
     def _render_downtime_html(self, line):
         if not line.downtime_ids:
             return ""

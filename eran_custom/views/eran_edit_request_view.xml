@@ -66,11 +66,4 @@
         <field name="context">{'search_default_waiting': 1}</field>
     </record>
 
-    <menuitem
-        id="menu_mes_kiosk"
-        parent="dsn_approval_mrp.menu_item_dsn_approval_setting_mrp"
-        action="action_mes_kiosk_mode"
-        name="MO Scan"
-        sequence="20"/>
-
 </odoo>

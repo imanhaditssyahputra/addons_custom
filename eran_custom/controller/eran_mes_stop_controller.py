@@ -95,12 +95,28 @@ class MesScanController(http.Controller):
                     Siap untuk mulai kerja hari ini?
                 </p>
 
+                <div style="
+                margin-top:30px;
+            ">
+
                 <a href="/web#model=mes.scan.approval&view_type=form&id={approval.id}"
-                    style="display:block;padding:16px;background:#28a745;
-                    color:white;border-radius:8px;text-decoration:none;
-                    font-weight:bold;font-size:16px;">
-                    Mulai
+                style="
+                        display:block;
+                        width:100%;
+                        box-sizing:border-box;
+                        padding:15px;
+                        background:#0b72b9;
+                        color:white;
+                        text-align:center;
+                        border-radius:6px;
+                        text-decoration:none;
+                        font-weight:bold;
+                        font-size:16px;
+                ">
+                    MULAI
                 </a>
+
+            </div>
             </div>
         </body>
         </html>
@@ -779,6 +795,7 @@ class MesScanController(http.Controller):
 
         return request.make_response(html)
 
+
     def _backorder_choice_page(self, line, qty_value):
         html = f"""
         <html>
@@ -824,6 +841,8 @@ class MesScanController(http.Controller):
         if not line.exists():
             return self._info_page("Gagal", f"Line ID {line_id} tidak ditemukan.", color="#dc3545")
 
+        approval = line.approval_id.sudo()
+
         try:
             qty_value = float(qty) if qty else 0.0
         except ValueError:
@@ -844,7 +863,205 @@ class MesScanController(http.Controller):
             f"{line.workorder_id.name} selesai — Output: {qty_value} pcs ({label}).",
         )
 
-    # Tambahan buat Edit Form MO
+    # =================================
+    # ENDPOINT UNTUK BUKA RIWAYAT MO
+    # =================================
+
+    @http.route(
+        "/mes/my-history",
+        type="http",
+        auth="user",
+        methods=["GET"],
+    )
+    def mes_my_history(self, **kwargs):
+
+        employee_id = request.session.get("mes_employee_id")
+
+        # =====================================================
+        # BELUM SCAN
+        # =====================================================
+
+        if not employee_id:
+            return self._info_page(
+                "Akses Ditolak",
+                "Silakan scan barcode operator terlebih dahulu.",
+                color="#dc3545",
+            )
+
+        employee = request.env["hr.employee"].sudo().browse(employee_id)
+
+        if not employee.exists():
+            request.session.pop("mes_employee_id", None)
+
+            return self._info_page(
+                "Akses Ditolak",
+                "Data operator tidak ditemukan. Silakan scan kembali.",
+                color="#dc3545",
+            )
+
+        # =====================================================
+        # CARI RIWAYAT OPERATOR
+        # =====================================================
+
+        approvals = request.env["mes.scan.approval"].sudo().search(
+            [
+                ("employee_id", "=", employee.id),
+            ],
+            order="scan_time desc",
+        )
+
+        # =====================================================
+        # HTML RIWAYAT
+        # =====================================================
+
+        rows = ""
+
+        for approval in approvals:
+
+            scan_time = approval.scan_time
+
+            if scan_time:
+                scan_time = fields.Datetime.context_timestamp(
+                    approval,
+                    scan_time,
+                )
+
+                scan_time = scan_time.strftime(
+                    "%d/%m/%Y %H:%M"
+                )
+            else:
+                scan_time = "-"
+
+            rows += f"""
+            <tr>
+                <td>{scan_time}</td>
+                <td>{approval.shift_id.name or "-"}</td>
+                <td>
+                    <a href="/mes/greet/{approval.id}"
+                    style="
+                            display:inline-block;
+                            padding:7px 12px;
+                            background:#0b72b9;
+                            color:white;
+                            border-radius:5px;
+                            text-decoration:none;
+                    ">
+                        Lihat
+                    </a>
+                </td>
+            </tr>
+            """
+
+        if not rows:
+            rows = """
+            <tr>
+                <td colspan="3"
+                    style="text-align:center;padding:20px;">
+                    Belum ada riwayat MO.
+                </td>
+            </tr>
+            """
+
+        html = f"""
+        <html>
+        <head>
+            <meta charset="utf-8"/>
+            <title>Riwayat MO</title>
+        </head>
+
+        <body style="
+            font-family:-apple-system,Arial,sans-serif;
+            background:#f4f4f4;
+            margin:0;
+            padding:30px;
+        ">
+
+            <div style="
+                max-width:900px;
+                margin:auto;
+                background:white;
+                border-radius:12px;
+                padding:25px;
+                box-shadow:0 4px 20px rgba(0,0,0,0.12);
+            ">
+
+                <h2 style="margin-top:0;">
+                    Riwayat MO
+                </h2>
+
+                <div style="
+                    background:#eef7ff;
+                    padding:15px;
+                    border-radius:8px;
+                    margin-bottom:20px;
+                ">
+                    <b>Operator:</b>
+                    {employee.name}
+                </div>
+
+                <table style="
+                    width:100%;
+                    border-collapse:collapse;
+                ">
+
+                    <thead>
+                        <tr>
+                            <th style="
+                                text-align:left;
+                                padding:10px;
+                                border-bottom:1px solid #ddd;
+                            ">
+                                Tanggal Scan
+                            </th>
+
+                            <th style="
+                                text-align:left;
+                                padding:10px;
+                                border-bottom:1px solid #ddd;
+                            ">
+                                Shift
+                            </th>
+
+                            <th style="
+                                text-align:left;
+                                padding:10px;
+                                border-bottom:1px solid #ddd;
+                            ">
+                                Aksi
+                            </th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {rows}
+                    </tbody>
+
+                </table>
+
+                <div style="margin-top:20px;">
+
+                    <a href="/mes/greet/{approvals[:1].id if approvals else 0}"
+                    style="
+                            display:inline-block;
+                            padding:10px 15px;
+                            background:#28a745;
+                            color:white;
+                            border-radius:6px;
+                            text-decoration:none;
+                            margin-right:8px;
+                    ">
+                        MO Scan
+                    </a>
+
+                </div>
+
+            </div>
+
+        </body>
+        </html>
+        """
+
+        return request.make_response(html)
 
 
 
