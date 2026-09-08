@@ -58,65 +58,96 @@ class MesScanController(http.Controller):
         hour = now_local.hour
 
         if 4 <= hour < 11:
-            greeting = "Selamat Pagi"
+            greeting, emoji = "Selamat Pagi", "🌅"
         elif 11 <= hour < 15:
-            greeting = "Selamat Siang"
+            greeting, emoji = "Selamat Siang", "☀️"
         elif 15 <= hour < 18:
-            greeting = "Selamat Sore"
+            greeting, emoji = "Selamat Sore", "🌤️"
         else:
-            greeting = "Selamat Malam"
+            greeting, emoji = "Selamat Malam", "🌙"
 
         employee_name = approval.employee_id.name or "-"
 
+        # Buat list ringkas MO + product
+        mo_rows = ""
+        for line in approval.line_ids.sorted("sequence"):
+            wo = line.workorder_id
+            mo_name = wo.production_id.name or "-"
+            product = wo.production_id.product_id.display_name or "-"
+            mo_rows += f"""
+            <tr>
+                <td style="padding:6px 8px;color:#333;font-weight:bold;">{mo_name}</td>
+                <td style="padding:6px 8px;color:#555;font-size:13px;">{product}</td>
+            </tr>
+            """
+
+        mo_section = ""
+        if mo_rows:
+            mo_section = f"""
+            <div style="margin:20px 0;text-align:left;">
+                <p style="font-size:13px;color:#777;margin-bottom:8px;">
+                    MO hari ini untuk kamu:
+                </p>
+                <table style="width:100%;border-collapse:collapse;">
+                    <thead>
+                        <tr style="border-bottom:1px solid #e0e0e0;">
+                            <th style="padding:6px 8px;text-align:left;font-size:12px;color:#999;">MO</th>
+                            <th style="padding:6px 8px;text-align:left;font-size:12px;color:#999;">Product</th>
+                        </tr>
+                    </thead>
+                    <tbody>{mo_rows}</tbody>
+                </table>
+            </div>
+            """
+        else:
+            mo_section = "<p style='color:#999;font-size:13px;margin:16px 0;'>Belum ada MO untuk hari ini.</p>"
+
         html = f"""
         <html>
-        <head><meta charset="utf-8"/><title>Selamat Datang</title></head>
-        <body style="
-            font-family: -apple-system, Arial, sans-serif;
-            background:##01666b;
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            height:100vh;
-            margin:0;
-        ">
-            <div style="
-                background:white;
-                border-radius:16px;
-                padding:50px 40px;
-                text-align:center;
-                width:380px;
-                box-shadow:0 8px 30px rgba(0,0,0,0.2);
-            ">
-                <div style="font-size:48px;margin-bottom:10px;">👋</div>
-                <h2 style="margin:0 0 6px 0;color:#0b72b9;">{greeting},</h2>
-                <h2 style="margin:0 0 20px 0;color:#333;">{employee_name}!</h2>
-                <p style="color:#714B67;font-size:14px;margin-bottom:30px;">
-                    Siap untuk mulai kerja hari ini?
+        <head>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width,initial-scale=1"/>
+            <title>MES Kiosk</title>
+            <style>
+                * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+                body {{
+                    font-family: -apple-system, Arial, sans-serif;
+                    background: #01666b;
+                    min-height: 100vh;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 20px 16px;
+                }}
+                .card {{
+                    background: white;
+                    border-radius: 16px;
+                    padding: 36px 32px;
+                    width: 100%;
+                    max-width: 440px;
+                    box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+                    text-align: center;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <div style="font-size:48px;margin-bottom:12px;">{emoji} 👋</div>
+                <h2 style="color:#01666b;margin-bottom:4px;">{greeting},</h2>
+                <h2 style="color:#333;margin-bottom:8px;">{employee_name}!</h2>
+                <p style="color:#777;font-size:14px;">
+                    Semangat bekerja hari ini! 💪<br/>
+                    Berikan yang terbaik untuk tim.
                 </p>
 
-                <div style="
-                margin-top:30px;
-            ">
+                {mo_section}
 
-                <a href="/web#model=mes.scan.approval&view_type=form&id={approval.id}"
-                style="
-                        display:block;
-                        width:100%;
-                        box-sizing:border-box;
-                        padding:15px;
-                        background:#0b72b9;
-                        color:white;
-                        text-align:center;
-                        border-radius:6px;
-                        text-decoration:none;
-                        font-weight:bold;
-                        font-size:16px;
-                ">
-                    MULAI
+                <a href="/web#model=mes.scan.approval&id={approval.id}&view_type=form"
+                    style="display:block;width:100%;padding:14px;margin-top:8px;
+                    background:#01666b;color:white;border-radius:8px;
+                    text-decoration:none;font-weight:bold;font-size:16px;">
+                    ✅ OK — Mulai Kerja
                 </a>
-
-            </div>
             </div>
         </body>
         </html>
@@ -127,26 +158,109 @@ class MesScanController(http.Controller):
     # START
     # ===================================
 
-    @http.route("/mes/start/<int:line_id>", type="http", auth="user")
+    @http.route("/mes/start/<int:line_id>", type="json", auth="user")
     def mes_start(self, line_id, **kwargs):
         line = request.env["mes.scan.approval.line"].sudo().browse(line_id)
 
         if not line.exists():
-            return self._info_page("Gagal", f"Line ID {line_id} tidak ditemukan.", color="#dc3545")
+            return {"success": False, "message": f"Line ID {line_id} tidak ditemukan."}
 
         try:
             line.action_start()
         except UserError as e:
-            return self._info_page("Belum Bisa Dimulai", str(e), color="#dc3545")
+            return {"success": False, "message": str(e)}
         except Exception as e:
             _logger.exception("ERROR saat action_start line_id=%s", line_id)
-            return self._info_page("Terjadi Kesalahan", str(e), color="#dc3545")
+            return {"success": False, "message": str(e)}
 
         wo = line.workorder_id
-        return self._info_page(
-            "MO Sudah Berjalan",
-            f"{wo.name} — {wo.production_id.name} sudah dimulai.",
-        )
+        return {
+            "success": True,
+            "message": f"{wo.name} — {wo.production_id.name} sudah dimulai."
+        }
+
+    # ===================================
+    # STOP — GET LOSSES (JSON)
+    # ===================================
+
+    @http.route("/mes/stop/<int:line_id>/losses", type="json", auth="user")
+    def mes_stop_losses(self, line_id, **kwargs):
+        line = request.env["mes.scan.approval.line"].sudo().browse(line_id)
+        if not line.exists():
+            return {"success": False, "message": "Line tidak ditemukan."}
+
+        losses = request.env["mrp.workcenter.productivity.loss"].sudo().search([
+            ("loss_type", "!=", "productive"),
+        ])
+
+        wo = line.workorder_id
+        return {
+            "success": True,
+            "line_id": line.id,
+            "wo_name": wo.name or "-",
+            "mo_name": wo.production_id.name or "-",
+            "qty_target": line.qty_target,
+            "losses": [{"id": l.id, "name": l.name} for l in losses],
+        }
+
+
+    # ===================================
+    # STOP — CONFIRM (JSON)
+    # ===================================
+
+    @http.route("/mes/stop/<int:line_id>/confirm-json", type="json", auth="user")
+    def mes_stop_confirm_json(self, line_id, reason=None, qty=None, loss_id=None, **kwargs):
+        line = request.env["mes.scan.approval.line"].sudo().browse(line_id)
+        if not line.exists():
+            return {"success": False, "message": "Line tidak ditemukan."}
+
+        if reason == "done":
+            try:
+                qty_value = float(qty) if qty else 0.0
+            except (ValueError, TypeError):
+                return {"success": False, "message": "Jumlah produksi tidak valid."}
+
+            if qty_value <= 0:
+                return {"success": False, "message": "Jumlah hasil produksi harus lebih dari 0."}
+
+            try:
+                line.action_stop("done", qty=qty_value, create_backorder=False)
+            except Exception as e:
+                request.env.cr.rollback()
+                _logger.exception("ERROR action_stop done line_id=%s", line_id)
+                return {"success": False, "message": str(e)}
+
+            wo = line.workorder_id
+            return {
+                "success": True,
+                "message": f"{wo.name} selesai. Output: {qty_value:g} pcs."
+            }
+
+        elif reason == "stop":
+            try:
+                loss_id_value = int(loss_id) if loss_id else None
+            except (ValueError, TypeError):
+                return {"success": False, "message": "Alasan stop tidak valid."}
+
+            if not loss_id_value:
+                return {"success": False, "message": "Alasan stop harus dipilih."}
+
+            try:
+                line.action_stop("stop", loss_id=loss_id_value)
+            except UserError as e:
+                return {"success": False, "message": str(e)}
+            except Exception as e:
+                _logger.exception("ERROR action_stop stop line_id=%s", line_id)
+                return {"success": False, "message": str(e)}
+
+            loss_name = request.env["mrp.workcenter.productivity.loss"].sudo().browse(loss_id_value).name
+            wo = line.workorder_id
+            return {
+                "success": True,
+                "message": f"{wo.name} dihentikan — {loss_name}."
+            }
+
+        return {"success": False, "message": "Alasan tidak valid."}
 
     # ===================================
     # STOP — pilihan alasan
