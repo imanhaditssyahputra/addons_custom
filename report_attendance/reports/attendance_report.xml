@@ -1,0 +1,161 @@
+<odoo>
+
+    <template id="report_attendance.internal_layout">
+        <div class="article">
+            <link
+                href="/report_attendance/static/src/css/report.css"
+                rel="stylesheet"
+            />
+            <t t-out="0" />
+        </div>
+        <div class="footer">
+            <div class="row">
+                <div class="col-6 custom_footer">
+                    <span
+                        t-out="context_timestamp(datetime.datetime.now()).strftime('%Y-%m-%d')"
+                    />
+                </div>
+                <div class="col-6 text-right custom_footer">
+                    <span class="page" />/<span class="topage" />
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <template id="report_buttons">
+        <div class="button_row">
+            <button class="o_stock_card_reports_print btn btn-sm oe_button"><span
+                    class="fa fa-print"
+                />Print</button>
+            <button class="o_stock_card_reports_export btn btn-sm oe_button"><span
+                    class="fa fa-download"
+                />Export</button>
+        </div>
+    </template>
+
+    <template id="report_attendance_report_html">
+        <div class="o_stock_card_reports_page">
+            <t t-call="report_attendance.report_buttons" />
+            <t t-call="report_attendance.report_attendance_report_base" />
+        </div>
+    </template>
+
+    <template id="report_attendance.report_attendance_report_pdf">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="o">
+                <t t-call="report_attendance.internal_layout">
+                    <t t-call="report_attendance.report_attendance_report_base" />
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <template id="report_attendance.report_attendance_report_base">
+        <div class="page">
+            <div class="row" style="margin-bottom: 20px;">
+                <t t-set="title">Laporan Rekapitulasi Absensi Karyawan</t>
+                <h4 class="mt0" style="text-align: center; font-weight: bold;"><t t-out="title" /></h4>
+                <p style="text-align: center; font-size: 12px; margin-top: -5px;">
+                    Periode: 
+                    <span t-out="o.date_from.strftime('%d-%m-%Y') if o.date_from else 'Awal'"/> s/d 
+                    <span t-out="o.date_to.strftime('%d-%m-%Y') if o.date_to else 'Sekarang'"/>
+                </p>
+            </div>
+            
+            <!-- Menggunakan tag <table> standar agar browser patuh pada rowspan & colspan -->
+            <table style="width: 100%; border-collapse: collapse; font-size: 10px; font-family: sans-serif; border: 1px solid #000;">
+                <!-- Memanggil Kepala Judul Tabel (Header) -->
+                <t t-call="report_attendance.report_attendance_lines_header" />
+                
+                <!-- Membuka isi badan data tabel -->
+                <tbody>
+                    <t t-foreach="o.results" t-as="line">
+                        <t t-set="idx" t-value="line_index + 1"/>
+                        <t t-call="report_attendance.report_attendance_lines" />
+                    </t>
+                </tbody>
+            </table>
+        </div>
+    </template>
+
+    <template id="report_attendance.report_attendance_lines_header">
+        <thead style="background-color: #F2F2F2; font-weight: bold; text-align: center;">
+            <!-- BARIS PERTAMA HEADER -->
+            <tr style="border: 1px solid #000;">
+                <th style="border: 1px solid #000; vertical-align: middle; text-align: center; padding: 5px;" rowspan="2">NO</th>
+                <th style="border: 1px solid #000; vertical-align: middle; text-align: center; padding: 5px;" rowspan="2">NAMA</th>
+                <th style="border: 1px solid #000; vertical-align: middle; text-align: center; padding: 5px;" rowspan="2">DEPARTEMEN</th>
+                <th style="border: 1px solid #000; vertical-align: middle; text-align: center; padding: 5px;" rowspan="2">TERLAMBAT</th>
+                <th style="border: 1px solid #000; vertical-align: middle; text-align: center; padding: 5px;" rowspan="2" width="90px">FREKUENSI TERLAMBAT</th>
+                
+                <!-- Judul Kelompok Utama (Melebar ke Samping) -->
+                <th style="border: 1px solid #000; padding: 5px;" colspan="2">ALFA</th>
+                <th style="border: 1px solid #000; padding: 5px;" colspan="2">IJIN/NSD</th>
+                <th style="border: 1px solid #000; padding: 5px;" colspan="2">SD</th>
+                <th style="border: 1px solid #000; padding: 5px;" colspan="2">CUTI</th>
+                <th style="border: 1px solid #000; padding: 5px;" colspan="2">NON AKTIF</th>
+                
+                <!-- Kolom ABSEN Berwarna Kuning Soft Sesuai Excel -->
+                <th style="border: 1px solid #000; background-color: #FFF2CC; padding: 5px;" colspan="2">ABSEN</th>
+                <th style="border: 1px solid #000; padding: 5px;" colspan="2">LEMBUR</th>
+
+                <!-- TOTALAN ABSEN Berwarna Hijau Soft di Paling Ujung Kanan -->
+                <th style="border: 1px solid #000; background-color: #E2EFDA; vertical-align: middle; text-align: center; padding: 5px;" rowspan="2" width="90px">TOTALAN ABSEN</th>
+            </tr>
+
+            <!-- BARIS KEDUA HEADER (SUB-KOLOM HKB / HKS / HKM) -->
+            <tr style="border: 1px solid #000;">
+                <th style="border: 1px solid #000; padding: 3px;">HKB</th>
+                <th style="border: 1px solid #000; padding: 3px;">HKS</th>
+                <th style="border: 1px solid #000; padding: 3px;">HKB</th>
+                <th style="border: 1px solid #000; padding: 3px;">HKS</th>
+                <th style="border: 1px solid #000; padding: 3px;">HKB</th>
+                <th style="border: 1px solid #000; padding: 3px;">HKS</th>
+                <th style="border: 1px solid #000; padding: 3px;">HKB</th>
+                <th style="border: 1px solid #000; padding: 3px;">HKS</th>
+                <th style="border: 1px solid #000; padding: 3px;">HKB</th>
+                <th style="border: 1px solid #000; padding: 3px;">HKS</th>
+                
+                <th style="border: 1px solid #000; background-color: #FFF2CC; padding: 3px;">HKB</th>
+                <th style="border: 1px solid #000; background-color: #FFF2CC; padding: 3px;">HKS</th>
+                
+                <th style="border: 1px solid #000; padding: 3px;">HKB</th>
+                <th style="border: 1px solid #000; padding: 3px;">HKM</th>
+            </tr>
+        </thead>
+    </template>
+
+    <template id="report_attendance.report_attendance_lines">
+        <tr style="border: 1px solid #000;">
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="idx" />
+            <td style="border: 1px solid #000; text-align: left; padding: 4px;" t-out="line.employee_name" />
+            <td style="border: 1px solid #000; text-align: left; padding: 4px;" t-out="line.departement_name" />
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="'{0:,.2f}'.format(line.terlambat_hours or 0.0)" />
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="line.frekuensi_si or 0" />
+            
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="line.alfa_hkb or 0" />
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="line.alfa_hks or 0" />
+            
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="line.izin_hkb or 0" />
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="line.izin_hks or 0" />
+            
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="line.sakit_hkb or 0" />
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="line.sakit_hks or 0" />
+            
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="line.cuti_hkb or 0" />
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="line.cuti_hks or 0" />
+            
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="line.non_aktif_hkb or 0" />
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="line.non_aktif_hks or 0" />
+            
+            <td style="border: 1px solid #000; text-align: center; background-color: #FFF2CC; padding: 4px;" t-out="line.absen_hkb or 0" />
+            <td style="border: 1px solid #000; text-align: center; background-color: #FFF2CC; padding: 4px;" t-out="line.absen_hks or 0" />
+            
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="'{0:,.0f}'.format(line.lembur_hkb or 0)" />
+            <td style="border: 1px solid #000; text-align: center; padding: 4px;" t-out="'{0:,.0f}'.format(line.lembur_hkm or 0)" />
+            
+            <td style="border: 1px solid #000; text-align: center; font-weight: bold; background-color: #E2EFDA; padding: 4px;" t-out="line.total_absen or 0" />
+        </tr>
+    </template>
+
+</odoo>

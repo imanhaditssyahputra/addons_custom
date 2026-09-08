@@ -560,7 +560,7 @@
               action="hr_attendance.hr_attendance_report_action"
               sequence="1"/>
 
-    <menuitem id="eran_attendance_reporting_rekap_absen_detail"
+    <!-- <menuitem id="eran_attendance_reporting_rekap_absen_detail"
               name="Rekap Absensi Detail"
               parent="hr_attendance.menu_hr_attendance_report"
               action="eran_custom.eran_action_attendance_rekap_absensi_detail"
@@ -570,7 +570,7 @@
               name="Rekap Absensi Global"
               parent="hr_attendance.menu_hr_attendance_report"
               action="eran_custom.eran_action_attendance_rekap_absensi_global"
-              sequence="3"/>
+              sequence="3"/> -->
 
     <!-- Attendance Setting -->
     <record id="hr_attendance.menu_hr_attendance_settings" model="ir.ui.menu">

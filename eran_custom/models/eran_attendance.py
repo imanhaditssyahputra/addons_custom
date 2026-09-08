@@ -99,86 +99,6 @@ class EranAttendanceMachineConfig(models.Model):
                 if conn: conn.disconnect()
         return True
 
-    # def action_sync_attendance(self):
-    #     user_tz = pytz.timezone(self.env.user.tz or 'Asia/Jakarta')
-    #     utc_tz = pytz.utc
-
-    #     for record in self:
-    #         zk = ZK(record.ip_address, port=record.port, timeout=10)
-    #         conn = None
-    #         try:
-    #             conn = zk.connect()
-    #             conn.disable_device()
-    #             attendance_logs = conn.get_attendance()
-    #             # Urutkan ASC (paling pagi ke paling malam)
-    #             sorted_logs = sorted(attendance_logs, key=lambda l: l.timestamp)
-                
-    #             for log in sorted_logs:
-    #                 machine_time = log.timestamp 
-    #                 local_dt = user_tz.localize(machine_time, is_dst=None)
-    #                 utc_dt_naive = local_dt.astimezone(utc_tz).replace(tzinfo=None)
-    #                 str_utc_time = fields.Datetime.to_string(utc_dt_naive)
-
-    #                 employee = self.env['hr.employee'].search([('pin', '=', str(log.user_id))], limit=1)
-    #                 if not employee or not employee.shift_id:
-    #                     continue
-                    
-    #                 shift = employee.shift_id
-    #                 hour_decimal = local_dt.hour + (local_dt.minute / 60.0)
-
-    #                 # --- PROSES CHECK-IN (Data Pertama <= End Checkin) ---
-    #                 if hour_decimal <= shift.end_checkin:
-    #                     start_of_day = local_dt.replace(hour=0, minute=0, second=0).astimezone(utc_tz).replace(tzinfo=None)
-                        
-    #                     already_checkin = self.env['hr.attendance'].search([
-    #                         ('employee_id', '=', employee.id),
-    #                         ('check_in', '>=', fields.Datetime.to_string(start_of_day)),
-    #                         ('check_in', '<=', str_utc_time)
-    #                     ], limit=1)
-
-    #                     if not already_checkin:
-    #                         # Tutup absen menggantung sebelumnya jika ada (Constraint Odoo)
-    #                         open_att = self.env['hr.attendance'].search([
-    #                             ('employee_id', '=', employee.id),
-    #                             ('check_out', '=', False)
-    #                         ], limit=1)
-    #                         if open_att:
-    #                             open_att.write({'check_out': open_att.check_in})
-
-    #                         self.env['hr.attendance'].create({
-    #                             'employee_id': employee.id,
-    #                             'check_in': str_utc_time,
-    #                             'shift_id': shift.id,
-    #                         })
-    #                         self.env.cr.flush()
-
-    #                 # --- PROSES CHECK-OUT (Data Pertama di rentang OR > End Checkout) ---
-    #                 else:
-    #                     # Cek apakah jam masuk dalam rentang Checkout normal ATAU sudah kelewat jauh (> End Checkout)
-    #                     is_in_range = shift.start_checkout <= hour_decimal <= shift.end_checkout
-    #                     is_after_range = hour_decimal > shift.end_checkout
-
-    #                     if is_in_range or is_after_range:
-    #                         # Cari absen masuk yang belum ada checkoutnya
-    #                         open_attendance = self.env['hr.attendance'].search([
-    #                             ('employee_id', '=', employee.id),
-    #                             ('check_out', '=', False),
-    #                             ('check_in', '<', str_utc_time)
-    #                         ], limit=1, order='check_in desc')
-
-    #                         if open_attendance:
-    #                             # LOGIKA: Hanya update jika belum ada data checkout (Hanya ambil data pertama)
-    #                             # Karena sorted_logs urut pagi->malam, maka data pertama yang masuk kriteria ini yang disimpan
-    #                             open_attendance.write({'check_out': str_utc_time})
-    #                             self.env.cr.flush()
-
-    #             conn.enable_device()
-    #             record.last_sync = fields.Datetime.now()
-    #         except Exception as e:
-    #             raise UserError(("Gagal Sinkronisasi: %s") % str(e))
-    #         finally:
-    #             if conn: conn.disconnect()
-    #     return True
   
 class eranAttendance(models.Model):
     _inherit = 'hr.attendance'
@@ -214,7 +134,6 @@ class eranAttendance(models.Model):
 
         for log in logs:
             # Peta karyawan berdasarkan PIN mesin
-            if log.user_id == 50:
                 if not log.employee_id:
                     employee = self.env['hr.employee'].search([('pin', '=', str(log.user_id))], limit=1)
                     if employee:
