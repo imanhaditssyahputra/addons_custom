@@ -7,6 +7,7 @@ from collections import Counter
 from odoo.exceptions import UserError
 from odoo import http
 from odoo.http import request
+import pytz
 
 _logger = logging.getLogger(__name__)
 
@@ -366,47 +367,29 @@ class MesScanApproval(models.Model):
 
                 if line_sudo.state == "running":
 
+                    # Cari bagian tombol STOP (sekitar line 360-390), ganti href jadi onclick:
                     action_button = f"""
-                    <div style="
-                        text-align:right;
-                        margin-top:14px;
-                    ">
-                        <a href="/mes/stop/{line_sudo.id}"
-                            style="
-                                display:inline-block;
-                                padding:8px 16px;
-                                background:#dc3545;
-                                color:white;
-                                border-radius:6px;
-                                text-decoration:none;
-                                font-size:13px;
-                                font-weight:bold;
-                            ">
+                    <div style="text-align:right;margin-top:14px;">
+                        <button
+                            onclick="mesStop({line_sudo.id})"
+                            style="display:inline-block;padding:8px 16px;background:#dc3545;
+                            color:white;border-radius:6px;font-size:13px;font-weight:bold;
+                            border:none;cursor:pointer;">
                             ⏹️ STOP
-                        </a>
+                        </button>
                     </div>
                     """
 
                 elif line_sudo.can_start:
-
                     action_button = f"""
-                    <div style="
-                        text-align:right;
-                        margin-top:14px;
-                    ">
-                        <a href="/mes/start/{line_sudo.id}"
-                            style="
-                                display:inline-block;
-                                padding:8px 16px;
-                                background:#28a745;
-                                color:white;
-                                border-radius:6px;
-                                text-decoration:none;
-                                font-size:13px;
-                                font-weight:bold;
-                            ">
+                    <div style="text-align:right;margin-top:14px;">
+                        <button
+                            onclick="mesStart({line_sudo.id}, this)"
+                            style="display:inline-block;padding:8px 16px;background:#28a745;
+                            color:white;border-radius:6px;font-size:13px;font-weight:bold;
+                            border:none;cursor:pointer;">
                             ▶️ START
-                        </a>
+                        </button>
                     </div>
                     """
 
@@ -585,17 +568,23 @@ class MesScanApproval(models.Model):
                     edit_button = ""
 
                     if line_sudo.has_pending_edit:
+                        # cek state edit request-nya
+                        pending_request = self.env["mes.scan.approval.edit.request"].sudo().search([
+                            ("line_id", "=", line_sudo.id),
+                            ("state", "in", ["waiting", "approved"]),
+                        ], limit=1, order="create_date desc")
 
-                        edit_button = """
-                        <div style="
-                            text-align:right;
-                            margin-top:10px;
-                        ">
-                            <span style="
-                                font-size:12px;
-                                color:#888;
-                            ">
-                                ⏳ Menunggu persetujuan edit
+                        if pending_request and pending_request.state == "approved":
+                            edit_status_text = "✅ Sudah disetujui, konfirmasi memo ke Leader"
+                            edit_status_color = "#28a745"
+                        else:
+                            edit_status_text = "⏳ Menunggu persetujuan edit"
+                            edit_status_color = "#888"
+
+                        edit_button = f"""
+                        <div style="text-align:right; margin-top:10px;">
+                            <span style="font-size:12px; color:{edit_status_color};">
+                                {edit_status_text}
                             </span>
                         </div>
                         """
@@ -603,23 +592,14 @@ class MesScanApproval(models.Model):
                     else:
 
                         edit_button = f"""
-                        <div style="
-                            text-align:right;
-                            margin-top:10px;
-                        ">
-                            <a href="/mes/edit/{line_sudo.id}"
-                                style="
-                                    display:inline-block;
-                                    padding:6px 14px;
-                                    background:#6c757d;
-                                    color:white;
-                                    border-radius:5px;
-                                    text-decoration:none;
-                                    font-size:12px;
-                                    font-weight:bold;
-                                ">
+                        <div style="text-align:right;margin-top:10px;">
+                            <button
+                                data-mes-edit="{line_sudo.id}"
+                                style="display:inline-block;padding:6px 14px;background:#6c757d;
+                                color:white;border-radius:5px;border:none;font-size:12px;
+                                font-weight:bold;cursor:pointer;">
                                 ✏️ Edit
-                            </a>
+                            </button>
                         </div>
                         """
 
@@ -704,6 +684,127 @@ class MesScanApproval(models.Model):
                         {edit_button}
 
                     </div>
+                    """)
+
+                    html.append("""
+                    <script>
+                    function mesScanEditRequest(lineId, btn) {
+
+                        // Cegah double click
+                        btn.disabled = true;
+                        btn.innerText = '⏳ Memproses...';
+
+                        // ── POPUP KONFIRMASI ──────────────────────────────────
+                        const backdrop = document.createElement('div');
+                        Object.assign(backdrop.style, {
+                            position:'fixed', inset:'0', background:'rgba(0,0,0,0.55)',
+                            zIndex:'99999', display:'flex', alignItems:'center', justifyContent:'center'
+                        });
+
+                        const box = document.createElement('div');
+                        Object.assign(box.style, {
+                            background:'white', borderRadius:'12px', padding:'28px 24px',
+                            width:'340px', maxWidth:'90vw', textAlign:'center',
+                            boxShadow:'0 8px 32px rgba(0,0,0,0.25)', fontFamily:'Arial,sans-serif'
+                        });
+
+                        box.innerHTML = `
+                            <div style="font-size:36px;margin-bottom:10px;">⚠️</div>
+                            <h3 style="margin:0 0 8px;">Ajukan Edit?</h3>
+                            <p style="color:#777;font-size:13px;margin-bottom:20px;">
+                                Permintaan edit akan dikirim ke Leader untuk disetujui.
+                                Setelah disetujui, Leader akan membuat Memo ke Tim IT.
+                            </p>
+                            <div style="display:flex;gap:10px;">
+                                <button id="mes-edit-cancel" style="flex:1;padding:12px;border:none;
+                                    border-radius:6px;background:#6c757d;color:white;
+                                    font-size:14px;cursor:pointer;">Batal</button>
+                                <button id="mes-edit-confirm" style="flex:1;padding:12px;border:none;
+                                    border-radius:6px;background:#0b72b9;color:white;
+                                    font-size:14px;font-weight:bold;cursor:pointer;">Ya, Ajukan</button>
+                            </div>
+                        `;
+
+                        backdrop.appendChild(box);
+                        document.body.appendChild(backdrop);
+
+                        // Batal → tutup popup, enable tombol lagi
+                        box.querySelector('#mes-edit-cancel').onclick = () => {
+                            backdrop.remove();
+                            btn.disabled = false;
+                            btn.innerText = '✏️ Edit';
+                        };
+
+                        // Konfirmasi → kirim request via fetch
+                        box.querySelector('#mes-edit-confirm').onclick = async () => {
+                            box.querySelector('#mes-edit-confirm').disabled = true;
+                            box.querySelector('#mes-edit-confirm').innerText = '⏳...';
+
+                            try {
+                                const resp = await fetch(`/mes/edit/${lineId}/request-json`, {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({}),
+                                });
+                                const data = await resp.json();
+
+                                backdrop.remove();
+
+                                // ── POPUP HASIL ──────────────────────────────────
+                                const resultBackdrop = document.createElement('div');
+                                Object.assign(resultBackdrop.style, {
+                                    position:'fixed', inset:'0', background:'rgba(0,0,0,0.55)',
+                                    zIndex:'99999', display:'flex', alignItems:'center', justifyContent:'center'
+                                });
+
+                                const resultBox = document.createElement('div');
+                                Object.assign(resultBox.style, {
+                                    background:'white', borderRadius:'12px', padding:'28px 24px',
+                                    width:'340px', maxWidth:'90vw', textAlign:'center',
+                                    boxShadow:'0 8px 32px rgba(0,0,0,0.25)', fontFamily:'Arial,sans-serif'
+                                });
+
+                                const isOk = data.success;
+                                resultBox.innerHTML = `
+                                    <div style="font-size:36px;margin-bottom:10px;">
+                                        ${isOk ? '✅' : '❌'}
+                                    </div>
+                                    <h3 style="margin:0 0 8px;color:${isOk ? '#28a745' : '#dc3545'};">
+                                        ${isOk ? 'Request Terkirim' : 'Gagal'}
+                                    </h3>
+                                    <p style="color:#555;font-size:13px;margin-bottom:20px;">
+                                        ${data.message || '-'}
+                                    </p>
+                                    <button id="mes-edit-ok" style="width:100%;padding:12px;border:none;
+                                        border-radius:6px;background:${isOk ? '#28a745' : '#dc3545'};
+                                        color:white;font-size:14px;font-weight:bold;cursor:pointer;">
+                                        OK
+                                    </button>
+                                `;
+
+                                resultBackdrop.appendChild(resultBox);
+                                document.body.appendChild(resultBackdrop);
+
+                                // OK → tutup popup + refresh workorder_info
+                                resultBox.querySelector('#mes-edit-ok').onclick = () => {
+                                    resultBackdrop.remove();
+                                    // Trigger reload form Odoo supaya workorder_info ter-refresh
+                                    if (window.__owl__ || window.odoo) {
+                                        window.location.reload();
+                                    } else {
+                                        window.location.reload();
+                                    }
+                                };
+
+                            } catch (e) {
+                                backdrop.remove();
+                                alert('Terjadi kesalahan. Silakan coba lagi.');
+                                btn.disabled = false;
+                                btn.innerText = '✏️ Edit';
+                            }
+                        };
+                    }
+                    </script>
                     """)
 
             # =====================================================
@@ -1112,8 +1213,23 @@ class HrEmployee(models.Model):
             return None
 
         scan_time = fields.Datetime.now()
+
+        # =========================================================
+        # KONVERSI KE WAKTU LOKAL (Asia/Jakarta)
+        # =========================================================
+
+        tz = pytz.timezone("Asia/Jakarta")
+        scan_time_local = pytz.utc.localize(scan_time).astimezone(tz)
+        scan_hour = scan_time_local.hour + scan_time_local.minute / 60.0
+
+        # Hari ini dalam UTC (untuk query DB)
         today = scan_time.replace(hour=0, minute=0, second=0, microsecond=0)
         tomorrow = today + timedelta(days=1)
+
+        # =========================================================
+        # VALIDASI 1: WAJIB ABSEN DULU DI HR.ATTENDANCE
+        # Kalau belum ada check_in hari ini, tolak scan MO
+        # =========================================================
 
         attendance = self.env["hr.attendance"].sudo().search([
             ("employee_id", "=", employee.id),
@@ -1130,8 +1246,70 @@ class HrEmployee(models.Model):
         else:
             check_in_value = attendance.check_in
 
-        # ===== CARI WO YANG COCOK — DIJALANIN SETIAP KALI SCAN, =====
-        # ===== SEBELUM CEK APPROVAL EXISTING ATAU ENGGAK =====
+        # =========================================================
+        # VALIDASI 2: CEK JAM SHIFT
+        # Operator tidak boleh scan MO di luar jam shiftnya
+        # =========================================================
+
+        shift = employee.shift_id if hasattr(employee, "shift_id") else None
+
+        # Ambil shift dari WO kalau employee belum punya
+        if not shift:
+            # Cek WO hari ini milik employee untuk dapat shift-nya
+            sample_wo = self.env["mrp.workorder"].sudo().search([
+                "|",
+                    ("operator_id", "=", employee.id),
+                    ("production_id.operator_id", "=", employee.id),
+                ("state", "in", ["pending", "waiting", "ready", "progress"]),
+                ("production_id.date_planned_start", ">=", today),
+                ("production_id.date_planned_start", "<", tomorrow),
+            ], limit=1)
+            if sample_wo:
+                shift = sample_wo.shift_id
+
+        if shift:
+            # shift.hour_start dan shift.hour_end dalam format float
+            # misal 07.5 = 07:30, 15.0 = 15:00
+            # Sesuaikan nama field ini dengan model eran.master.shift Anda
+            shift_start = getattr(shift, "hour_start", None)   # jam mulai shift
+            shift_end   = getattr(shift, "hour_end", None)     # jam selesai shift
+
+            # Toleransi: 30 menit sebelum shift mulai & 60 menit setelah shift selesai
+            TOLERANSI_AWAL  = 0.5   # 30 menit
+            TOLERANSI_AKHIR = 1.0   # 60 menit
+
+            if shift_start is not None and shift_end is not None:
+                batas_awal  = shift_start - TOLERANSI_AWAL
+                batas_akhir = shift_end + TOLERANSI_AKHIR
+
+                # Handle shift malam yang melewati tengah malam
+                # Contoh: shift mulai 22:00 (22.0), selesai 06:00 (6.0)
+                if shift_end < shift_start:
+                    # Shift malam: valid kalau jam >= batas_awal ATAU jam <= batas_akhir
+                    dalam_shift = (scan_hour >= batas_awal) or (scan_hour <= batas_akhir)
+                else:
+                    dalam_shift = batas_awal <= scan_hour <= batas_akhir
+
+                if not dalam_shift:
+                    # Format jam untuk pesan error
+                    def fmt_jam(h):
+                        jam = int(h)
+                        menit = int(round((h - jam) * 60))
+                        return f"{jam:02d}:{menit:02d}"
+
+                    return {
+                        "error": (
+                            f"{employee.name} tidak dapat scan MO sekarang. "
+                            f"Jam kerja shift {shift.name} adalah "
+                            f"{fmt_jam(shift_start)} – {fmt_jam(shift_end)}. "
+                            f"Scan dilakukan pukul {scan_time_local.strftime('%H:%M')}."
+                        )
+                    }
+
+        # =========================================================
+        # CARI WO YANG COCOK
+        # =========================================================
+
         domain = [
             "|",
                 ("operator_id", "=", employee.id),
@@ -1145,12 +1323,6 @@ class HrEmployee(models.Model):
 
         _logger.warning("MES DEBUG - domain dipakai: %s", domain)
         _logger.warning("MES DEBUG - total WO ditemukan: %s", len(workorders))
-        for wo in workorders:
-            _logger.warning("MES DEBUG - WO=%s MO=%s state=%s wo.operator_id=%s mo.operator_id=%s",
-                wo.name, wo.production_id.name, wo.state,
-                wo.operator_id.name if wo.operator_id else "-",
-                wo.production_id.operator_id.name if wo.production_id.operator_id else "-"
-            )
 
         STATE_MAP = {
             "pending": "ready",
@@ -1160,7 +1332,10 @@ class HrEmployee(models.Model):
             "done": "done",
         }
 
-        # ===== CEK APPROVAL YANG SUDAH ADA HARI INI =====
+        # =========================================================
+        # CEK APPROVAL YANG SUDAH ADA HARI INI
+        # =========================================================
+
         existing = self.env["mes.scan.approval"].sudo().search([
             ("employee_id", "=", employee.id),
             ("check_in", ">=", today),
@@ -1170,12 +1345,8 @@ class HrEmployee(models.Model):
         if existing:
             existing.write({"scan_time": scan_time})
 
-            # ===== Tambahkan WO baru yang belum ada di line_ids =====
             existing_wo_ids = existing.line_ids.mapped("workorder_id").ids
             new_workorders = workorders.filtered(lambda wo: wo.id not in existing_wo_ids)
-
-            _logger.warning("MES DEBUG - existing_wo_ids: %s", existing_wo_ids)
-            _logger.warning("MES DEBUG - new_workorders: %s", new_workorders.mapped("name"))
 
             if new_workorders:
                 last_sequence = max(existing.line_ids.mapped("sequence") or [0])
@@ -1186,14 +1357,16 @@ class HrEmployee(models.Model):
                         "sequence": last_sequence + idx,
                         "workorder_id": wo.id,
                         "qty_target": wo.production_id.product_qty,
-                        # QTY ACTUAL = 0 karena WO baru, belum ada produksi sama sekali
                         "qty_actual": 0,
                         "state": STATE_MAP.get(wo.state, "ready"),
                     })
 
             return existing
 
-        # ===== KALAU BELUM ADA APPROVAL SAMA SEKALI, BARU BIKIN =====
+        # =========================================================
+        # BELUM ADA APPROVAL — BUAT BARU
+        # =========================================================
+
         if not workorders:
             return {"error": f"Tidak ada Work Order untuk {employee.name} hari ini."}
 
@@ -1212,7 +1385,6 @@ class HrEmployee(models.Model):
                 "sequence": seq,
                 "workorder_id": wo.id,
                 "qty_target": wo.production_id.product_qty,
-                # QTY ACTUAL = 0 karena WO baru, belum ada produksi sama sekali
                 "qty_actual": 0,
                 "state": STATE_MAP.get(wo.state, "ready"),
             })
@@ -1221,26 +1393,159 @@ class HrEmployee(models.Model):
 
     @api.model
     def attendance_scan(self, barcode):
-        result = self._mes_get_or_create_approval(barcode)
+        """
+        Dipanggil oleh kiosk attendance bawaan Odoo.
+        Catat hr.attendance lalu arahkan ke halaman sambutan custom.
+        """
+        import pytz
+        from datetime import timedelta
 
-        if isinstance(result, dict) and "error" in result:
-            return {"warning": result["error"]}
+        employee = self.sudo().search([("barcode", "=", barcode)], limit=1)
 
-        if result:
-            return {"success": f"Approval untuk {result.employee_id.name} siap."}
+        if not employee:
+            return {"warning": "Barcode tidak dikenali."}
 
-        return {"warning": "Barcode tidak dikenali."}
+        now_utc = fields.Datetime.now()
+        tz = pytz.timezone("Asia/Jakarta")
+        now_local = pytz.utc.localize(now_utc).astimezone(tz)
+
+        today_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        tomorrow_utc = today_utc + timedelta(days=1)
+
+        # Cek sudah absen hari ini belum
+        existing = self.env["hr.attendance"].sudo().search([
+            ("employee_id", "=", employee.id),
+            ("check_in", ">=", today_utc),
+            ("check_in", "<", tomorrow_utc),
+        ], order="check_in desc", limit=1)
+
+        if existing:
+            # Sudah absen — JANGAN buat baru, langsung redirect welcome
+            # tapi tampilkan info sudah absen (bukan buat record baru)
+            return {
+                "action": {
+                    "type": "ir.actions.act_url",
+                    "url": f"/attendance/welcome/{employee.id}?already=1",
+                    "target": "self",
+                }
+            }
+
+        if not existing:
+            # Tutup attendance terbuka sebelumnya
+            open_att = self.env["hr.attendance"].sudo().search([
+                ("employee_id", "=", employee.id),
+                ("check_out", "=", False),
+            ], limit=1)
+            if open_att:
+                open_att.write({"check_out": now_utc})
+
+            # Buat check-in baru
+            att_vals = {"employee_id": employee.id, "check_in": now_utc}
+            shift = getattr(employee, "shift_id", None)
+            if shift:
+                att_vals["shift_id"] = shift.id
+            self.env["hr.attendance"].sudo().create(att_vals)
+
+        # Redirect ke halaman sambutan
+        return {
+            "action": {
+                "type": "ir.actions.act_url",
+                "url": f"/attendance/welcome/{employee.id}",
+                "target": "self",
+            }
+        }
 
     @api.model
     def mes_kiosk_scan(self, barcode):
+        
+        # =========================================================
+        # VALIDASI 1: WAJIB ABSEN DULU DI HR.ATTENDANCE
+        # Dilakukan di sini, bukan di _mes_get_or_create_approval
+        # supaya attendance kiosk bawaan Odoo tidak ikut ke-block
+        # =========================================================
+        
+        import pytz
+        from datetime import timedelta
+
+        scan_time = fields.Datetime.now()
+        tz = pytz.timezone("Asia/Jakarta")
+        scan_time_local = pytz.utc.localize(scan_time).astimezone(tz)
+
+        # Batas hari ini dalam UTC
+        today = scan_time.replace(hour=0, minute=0, second=0, microsecond=0)
+        tomorrow = today + timedelta(days=1)
+
+        employee = self.sudo().search([("barcode", "=", barcode)], limit=1)
+
+        if not employee:
+            return {"warning": "Barcode tidak dikenali."}
+
+        # Cek apakah sudah absen hari ini
+        attendance = self.env["hr.attendance"].sudo().search([
+            ("employee_id", "=", employee.id),
+            ("check_in", ">=", today),
+            ("check_in", "<", tomorrow),
+        ], order="check_in desc", limit=1)
+
+        if not attendance:
+            return {
+                "warning": (
+                    f"{employee.name} belum melakukan absen masuk hari ini. "
+                    "Silakan scan absen di mesin absensi terlebih dahulu."
+                )
+            }
+
+        # =========================================================
+        # VALIDASI 2: CEK JAM SHIFT
+        # =========================================================
+
+        scan_hour = scan_time_local.hour + scan_time_local.minute / 60.0
+        shift = getattr(employee, "shift_id", None)
+
+        if shift:
+            shift_start = getattr(shift, "hour_start", None)
+            shift_end   = getattr(shift, "hour_end", None)
+
+            TOLERANSI_AWAL  = 0.5   # 30 menit sebelum shift
+            TOLERANSI_AKHIR = 1.0   # 60 menit setelah shift
+
+            if shift_start is not None and shift_end is not None:
+                batas_awal  = shift_start - TOLERANSI_AWAL
+                batas_akhir = shift_end + TOLERANSI_AKHIR
+
+                # Handle shift malam (lintas tengah malam)
+                if shift_end < shift_start:
+                    dalam_shift = (scan_hour >= batas_awal) or (scan_hour <= batas_akhir)
+                else:
+                    dalam_shift = batas_awal <= scan_hour <= batas_akhir
+
+                if not dalam_shift:
+                    def fmt_jam(h):
+                        jam = int(h)
+                        menit = int(round((h - jam) * 60))
+                        return f"{jam:02d}:{menit:02d}"
+
+                    return {
+                        "warning": (
+                            f"{employee.name} tidak dapat scan MO sekarang. "
+                            f"Jam kerja shift {shift.name} adalah "
+                            f"{fmt_jam(shift_start)} – {fmt_jam(shift_end)}. "
+                            f"Scan dilakukan pukul {scan_time_local.strftime('%H:%M')}."
+                        )
+                    }
+
+        # =========================================================
+        # SEMUA VALIDASI LOLOS — LANJUT PROSES APPROVAL
+        # =========================================================
+
         result = self._mes_get_or_create_approval(barcode)
-    
+
         if isinstance(result, dict) and "error" in result:
             return {"warning": result["error"]}
-    
+
         if not result:
             return {"warning": "Barcode tidak dikenali."}
-    
+
         return {
             "action": {
                 "type": "ir.actions.act_url",
@@ -1416,6 +1721,51 @@ class MesScanController(http.Controller):
                 f"{line.workorder_id.name} telah dikirim "
                 f"ke Leader {leader.name}."
             ),
+        )
+
+    @http.route("/mes/edit/<int:line_id>/request-json", type="http", auth="user", methods=["POST"], csrf=False)
+    def mes_edit_request_json(self, line_id, **kwargs):
+        import json
+
+        line = request.env["mes.scan.approval.line"].sudo().browse(line_id)
+
+        if not line.exists():
+            return request.make_response(
+                json.dumps({"success": False, "message": "Line tidak ditemukan."}),
+                headers={"Content-Type": "application/json"}
+            )
+
+        if line.has_pending_edit:
+            return request.make_response(
+                json.dumps({"success": False, "message": "Request edit sudah diajukan dan sedang menunggu persetujuan."}),
+                headers={"Content-Type": "application/json"}
+            )
+
+        leader = line.leader_id.sudo()
+        if not leader:
+            return request.make_response(
+                json.dumps({"success": False, "message": "Work Order ini belum memiliki Leader."}),
+                headers={"Content-Type": "application/json"}
+            )
+
+        leader_user = request.env["mes.scan.approval.edit.request"].sudo()._find_leader_user(leader)
+        if not leader_user:
+            return request.make_response(
+                json.dumps({"success": False, "message": f"Leader {leader.name} tidak memiliki User Odoo."}),
+                headers={"Content-Type": "application/json"}
+            )
+
+        edit_request = request.env["mes.scan.approval.edit.request"].sudo().create({
+            "line_id": line.id,
+        })
+        edit_request._send_leader_notification()
+
+        return request.make_response(
+            json.dumps({
+                "success": True,
+                "message": f"Permintaan edit untuk {line.workorder_id.name} telah dikirim ke Leader {leader.name}."
+            }),
+            headers={"Content-Type": "application/json"}
         )
 
 class MesScanApprovalEditRequest(models.Model):
@@ -1747,41 +2097,218 @@ class MesScanApprovalEditRequest(models.Model):
                 "Hanya Leader yang dapat menyetujui request edit."
             )
 
+        wo = self.workorder_id.sudo()
+        production = wo.production_id.sudo() if wo else None
+        operator_name = self.requested_by.sudo().name if self.requested_by else "-"
+        leader_name = self.env.user.name or "-"
+        wo_name = wo.name if wo else "-"
+        mo_name = production.name if production else "-"
+
         # =====================================================
-        # APPROVE REQUEST
+        # APPROVE REQUEST + TULIS CATATAN KE FIELD NOTE
         # =====================================================
 
         self.write({
             "state": "approved",
             "approved_by": self.env.user.id,
             "approved_date": fields.Datetime.now(),
+            "note": (
+                f"✅ Disetujui oleh Leader: {leader_name}\n"
+                f"Operator  : {operator_name}\n"
+                f"MO        : {mo_name}\n"
+                f"WO        : {wo_name}\n"
+                f"Perlu konfirmasi memo ke IT."
+            ),
         })
 
         # =====================================================
         # NOTIFIKASI KE OPERATOR
         # =====================================================
 
-        self._send_operator_result_notification(
-            "approved"
-        )
+        self._send_operator_result_notification("approved")
 
-        # Notifikasi admin dikirim setelah Leader menekan OK pada popup Memo IT.
         return True
 
-    def action_confirm_it_memo(self):
-        """Konfirmasi Leader untuk mengirim pengajuan memo ke admin."""
-        self.ensure_one()
+        # =========================================================
+        # CONFIM MEMO IT
+        # =========================================================
 
-        leader_user = self._get_leader_user()
-        if self.env.user != leader_user:
-            raise UserError("Hanya Leader Work Order yang dapat mengonfirmasi Memo IT.")
-        if self.state != "approved":
-            raise UserError("Request edit harus disetujui terlebih dahulu.")
+        def action_confirm_it_memo(self):
+            """Konfirmasi Leader untuk mengirim pengajuan memo ke admin."""
+            self.ensure_one()
 
-        if not self.memo_notified:
-            self._send_admin_memo_notification()
-            self.write({"memo_notified": True})
-        return True
+            leader_user = self._get_leader_user()
+            if self.env.user != leader_user:
+                raise UserError("Hanya Leader Work Order yang dapat mengonfirmasi Memo IT.")
+            if self.state != "approved":
+                raise UserError("Request edit harus disetujui terlebih dahulu.")
+
+            if not self.memo_notified:
+                self._send_admin_memo_notification()
+                self.write({"memo_notified": True})
+            return True
+
+    # =========================================================
+    # CREATE NOTES MEMO
+    # =========================================================
+    
+        def action_create_it_note(self):
+            """Membuat Memo/Notes untuk Tim IT setelah admin mengonfirmasi."""
+
+            self.ensure_one()
+
+            if self.state != "approved":
+                raise UserError(
+                    "Request edit belum disetujui oleh Leader."
+                )
+
+            workorder = self.workorder_id.sudo()
+            production = (
+                workorder.production_id.sudo()
+                if workorder
+                else False
+            )
+
+            operator_name = (
+                self.requested_by.sudo().name
+                if self.requested_by
+                else "-"
+            )
+
+            leader_name = (
+                self.approved_by.sudo().name
+                if self.approved_by
+                else "-"
+            )
+
+            workorder_name = (
+                workorder.name
+                if workorder
+                else "-"
+            )
+
+            production_name = (
+                production.name
+                if production
+                else "-"
+            )
+
+            product_name = (
+                workorder.product_id.sudo().display_name
+                if workorder and workorder.product_id
+                else "-"
+            )
+
+            current_qty = self.current_qty or 0
+            new_qty = self.new_qty or 0
+
+            note_title = (
+                f"Memo Perubahan Data - "
+                f"{production_name} - {workorder_name}"
+            )
+
+            note_body = f"""
+            <h2>Pengajuan Perubahan Data Produksi</h2>
+
+            <p>
+                Terdapat pengajuan perubahan data produksi
+                yang telah disetujui oleh Leader.
+            </p>
+
+            <table style="border-collapse: collapse; width: 100%;">
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">
+                        Operator
+                    </td>
+                    <td style="padding: 6px;">
+                        {operator_name}
+                    </td>
+                </tr>
+
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">
+                        Leader
+                    </td>
+                    <td style="padding: 6px;">
+                        {leader_name}
+                    </td>
+                </tr>
+
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">
+                        Manufacturing Order
+                    </td>
+                    <td style="padding: 6px;">
+                        {production_name}
+                    </td>
+                </tr>
+
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">
+                        Work Order
+                    </td>
+                    <td style="padding: 6px;">
+                        {workorder_name}
+                    </td>
+                </tr>
+
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">
+                        Product
+                    </td>
+                    <td style="padding: 6px;">
+                        {product_name}
+                    </td>
+                </tr>
+
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">
+                        Quantity Saat Ini
+                    </td>
+                    <td style="padding: 6px;">
+                        {current_qty}
+                    </td>
+                </tr>
+
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">
+                        Quantity Perubahan
+                    </td>
+                    <td style="padding: 6px;">
+                        {new_qty}
+                    </td>
+                </tr>
+            </table>
+
+            <br/>
+
+            <p>
+                <strong>Status:</strong>
+                Disetujui oleh Leader dan dikirim ke Tim IT.
+            </p>
+
+            <p>
+                <strong>Catatan Request:</strong><br/>
+                {self.note or "-"}
+            </p>
+            """
+
+            note = self.env["note.note"].sudo().create({
+                "name": note_title,
+                "memo": note_body,
+            })
+
+            _logger.info(
+                "MES EDIT REQUEST: Notes dibuat untuk Tim IT "
+                "request_id=%s, note_id=%s",
+                self.id,
+                note.id,
+            )
+
+            return {
+                "note_id": note.id,
+                "note_name": note.name,
+            }
 
     # =========================================================
     # REJECT
@@ -2021,3 +2548,7 @@ class MesScanApprovalEditRequest(models.Model):
             self.id,
         )
 
+class MesEditRequest(models.Model):
+    _name = "mes.edit.request"
+    _description = "MES Edit Request"
+    _inherit = ["mail.thread", "mail.activity.mixin"]  # ← ini harus ada
