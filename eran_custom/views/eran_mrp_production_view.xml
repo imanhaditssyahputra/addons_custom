@@ -72,10 +72,10 @@
 
             </xpath>
             <xpath expr="//field[@name='user_id']" position="after">
-                <field name="shift_id"/>
-                <field name="leader_id"/>
-                <field name="operator_id"/>
-                <field name="operator_id2"/>
+                <field name="shift_id" options="{'no_create': True}"/>
+                <field name="leader_id" options="{'no_create': True}"/>
+                <field name="operator_id" options="{'no_create': True}"/>
+                <field name="operator_id2" options="{'no_create': True}"/>
                 <field name="picking_type_id" attrs="{'readonly': [('state', 'in', ('progress','to_close','done','cancel'))]}"/>
                 <field name="need_approval" invisible="1"/>
                 <!-- <field name="need_approval_req_mat" invisible="1"/> -->

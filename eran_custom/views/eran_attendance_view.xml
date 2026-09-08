@@ -268,9 +268,9 @@
         </field>
     </record>
     <!-- End page attendance lembur -->
-
+</odoo>
     <!-- Start page Reporting Rekap Absensi Detail-->
-    <record id="eran_action_attendance_rekap_absensi_detail" model="ir.actions.act_window">
+    <!--<record id="eran_action_attendance_rekap_absensi_detail" model="ir.actions.act_window">
         <field name="name">Rekap Absensi Bulanan Detail</field>
         <field name="type">ir.actions.act_window</field>
         <field name="res_model">eran.rekap.absen.report.detail</field>
@@ -283,9 +283,9 @@
                 Data akan otomatis terisi berdasarkan pencatatan transaksi Kehadiran (Attendance) dan Cuti (Time Off).
             </p>
         </field>
-    </record>
+    </record> -->
     
-    <record id="view_eran_rekap_absen_report_detail_tree" model="ir.ui.view">
+    <!-- <record id="view_eran_rekap_absen_report_detail_tree" model="ir.ui.view">
         <field name="name">eran.rekap.absen.report.detail.tree</field>
         <field name="model">eran.rekap.absen.report.detail</field>
         <field name="arch" type="xml">
@@ -323,20 +323,15 @@
                 <field name="hari_effective"/>
             </tree>
         </field>
-    </record>
+    </record> -->
 
-    <record id="view_eran_rekap_absen_report_detail_pivot" model="ir.ui.view">
+    <!-- <record id="view_eran_rekap_absen_report_detail_pivot" model="ir.ui.view">
         <field name="name">eran.rekap.absen.report.detail.pivot</field>
         <field name="model">eran.rekap.absen.report.detail</field>
         <field name="arch" type="xml">
             <pivot string="Analisis Rekap Absensi" disable_linking="true">
-                <!-- Sumbu Baris (Row): Mengelompokkan berdasarkan Departemen lalu Nama Karyawan -->
                 <field name="employee_id" type="row"/>
-                
-                <!-- Sumbu Kolom (Column): Mengelompokkan berdasarkan Waktu Tanggal -->
                 <field name="date" interval="month" type="col"/>
-                
-                <!-- Nilai Ukuran (Measures): Data angka yang akan dijumlahkan otomatis -->
                 <field name="start_checkin" type="measure"/>
                 <field name="start_checkout" type="measure"/>
                 <field name="cuti_kb" type="measure"/>
@@ -344,11 +339,11 @@
                 <field name="lembur_ks_in" type="measure"/>
             </pivot>
         </field>
-    </record>
+    </record> -->
     <!-- End page Reporting Rekap Absensi Detail-->
 
     <!-- Start page Reporting Rekap Absensi Global-->
-    <record id="view_eran_rekap_absen_report_global_search" model="ir.ui.view">
+    <!-- <record id="view_eran_rekap_absen_report_global_search" model="ir.ui.view">
         <field name="name">eran.rekap.absen.report.global.search</field>
         <field name="model">eran.rekap.absen.report.global</field>
         <field name="arch" type="xml">
@@ -357,8 +352,6 @@
                 <field name="department_id" string="Departemen"/>
 
                 <separator/>
-                
-                    <!-- FILTER OTOMATIS BERDASARKAN BULAN PERIODE -->
                     <filter string="Bulan Ini" name="filter_bulan_ini" 
                             domain="[('date', '&gt;=', (context_today()).strftime('%Y-%m-01')), 
                                         ('date', '&lt;', (context_today() + relativedelta(months=1)).strftime('%Y-%m-01'))]"/>
@@ -373,9 +366,9 @@
                 </group>
             </search>
         </field>
-    </record>
+    </record> -->
 
-    <record id="eran_action_attendance_rekap_absensi_global" model="ir.actions.act_window">
+    <!-- <record id="eran_action_attendance_rekap_absensi_global" model="ir.actions.act_window">
         <field name="name">Rekap Absensi Bulanan Global</field>
         <field name="type">ir.actions.act_window</field>
         <field name="res_model">eran.rekap.absen.report.global</field>
@@ -390,9 +383,9 @@
                 Data akan otomatis terisi berdasarkan pencatatan transaksi Kehadiran (Attendance) dan Cuti (Time Off).
             </p>
         </field>
-    </record>
+    </record> -->
     
-    <record id="view_eran_rekap_absen_report_global_tree" model="ir.ui.view">
+    <!-- <record id="view_eran_rekap_absen_report_global_tree" model="ir.ui.view">
         <field name="name">eran.rekap.absen.report.global.tree</field>
         <field name="model">eran.rekap.absen.report.global</field>
         <field name="arch" type="xml">
@@ -419,21 +412,16 @@
                 <field name="totalan_absen" string="Totalan Absen" class="fw-bold"/>
             </tree>
         </field>
-    </record>
+    </record> -->
 
-    <record id="view_eran_rekap_absen_report_global_pivot" model="ir.ui.view">
+    <!-- <record id="view_eran_rekap_absen_report_global_pivot" model="ir.ui.view">
         <field name="name">eran.rekap.absen.report.global.pivot</field>
         <field name="model">eran.rekap.absen.report.global</field>
         <field name="arch" type="xml">
             <pivot string="Analisis Rekap Absensi" disable_linking="true">
-                <!-- Sumbu Baris (Row): Mengelompokkan berdasarkan Departemen lalu Nama Karyawan -->
                 <field name="department_id" type="row"/>
                 <field name="employee_id" type="row"/>
-                
-                <!-- Sumbu Kolom (Column): Mengelompokkan berdasarkan Waktu Tanggal -->
                 <field name="date" interval="month" type="col"/>
-                
-                <!-- Nilai Ukuran (Measures): Data angka yang akan dijumlahkan otomatis -->
                 <field name="terlambat_jam" type="measure"/>
                 <field name="frekuensi_terlambat" type="measure"/>
                 <field name="cuti_hkb" type="measure"/>
@@ -441,6 +429,5 @@
                 <field name="lembur_hkm" type="measure"/>
             </pivot>
         </field>
-    </record>
+    </record> -->
     <!-- End page Reporting Rekap Absensi Detail-->
-</odoo>

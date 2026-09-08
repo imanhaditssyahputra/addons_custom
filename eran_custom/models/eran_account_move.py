@@ -145,7 +145,39 @@ class AccountMove(models.Model):
         res = super(AccountMove, self).create(vals)
         if 'picking_ids' in vals:
             res.set_value_inv_picking()
+
+        # ====================================================================
+        # Handle Retur Total & Retur Sebagian
+        # ====================================================================
+        if res.move_type == 'out_invoice' and res.invoice_line_ids:
+            lines_to_unlink = self.env['account.move.line']
+            is_changed = False
+            
+            for line in res.invoice_line_ids:
+                if line.stock_move_id:
+                    qty_net = line.stock_move_id.quantity_after_returns
+                    
+                    # KONDISI A: Retur Total (Kuantitas bersih 0 atau minus) -> Hapus Baris
+                    if qty_net <= 0:
+                        lines_to_unlink |= line
+                    
+                    # KONDISI B: Retur Sebagian -> Update Kuantitas di Invoice Line
+                    elif line.quantity != qty_net:
+                        # Menggunakan write bypass agar field dependensi manual terupdate
+                        line.write({'quantity': qty_net})
+                        is_changed = True
+
+            # 2. Eksekusi penghapusan untuk produk yang retur total
+            if lines_to_unlink:
+                lines_to_unlink.unlink()
+                is_changed = True
+                
+            # 3. Jika ada perubahan baris (dihapus/diubah qty), paksa hitung ulang total & pajak
+            if is_changed:
+                res._compute_amount()
+
         return res
+
 
     def write(self, vals):
         """Override write untuk memastikan tidak ada duplikasi lines"""
