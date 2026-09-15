@@ -178,13 +178,23 @@ class AccountMove(models.Model):
 
         return res
 
-
     def write(self, vals):
-        """Override write untuk memastikan tidak ada duplikasi lines"""
+        """Override write yang dioptimalkan untuk data banyak (Batch Processing)"""
+        # Amankan dari infinite loop awal
+        if self.env.context.get('skip_invoice_line_cleanup'):
+            return super(AccountMove, self).write(vals)
+
         res = super(AccountMove, self).write(vals)
         
+        # Nonaktifkan tracking chat sementara untuk meningkatkan performa loading data banyak
+        ctx = dict(self.env.context, skip_invoice_line_cleanup=True, tracking_disable=True)
+        self_ctx = self.with_context(ctx)
+
+        # ====================================================================
+        # BAGIAN 1: Handle Duplikasi & Baris Kosong
+        # ====================================================================
         if 'picking_ids' in vals:
-            for rec in self:
+            for rec in self_ctx:
                 lines_to_remove = []
                 processed_lines = set()
                 
@@ -199,10 +209,90 @@ class AccountMove(models.Model):
                             processed_lines.add(line_key)
                 
                 if lines_to_remove:
+                    # Hapus sekaligus menggunakan perintah Odoo command (2, id) tanpa memicu fungsi unlink terpisah
                     rec.write({'invoice_line_ids': [(2, line_id) for line_id in lines_to_remove]})
 
-                rec.set_value_inv_picking()
+            # Panggil fungsi update status picking yang sudah dioptimalkan di bawah
+            self_ctx.set_value_inv_picking()
+
+        # ====================================================================
+        # BAGIAN 2: Handle Retur Total & Retur Sebagian (Batch Update)
+        # ====================================================================
+        # Saring invoice yang bertipe out_invoice terlebih dahulu secara massal
+        invoices_to_process = self_ctx.filtered(lambda r: r.move_type == 'out_invoice')
+        
+        if invoices_to_process:
+            lines_to_unlink = self.env['account.move.line']
+            recompute_invoices = self.env['account.move']
+
+            for rec in invoices_to_process:
+                is_changed = False
+                for line in rec.invoice_line_ids:
+                    if line.stock_move_id and hasattr(line.stock_move_id, 'quantity_after_returns'):
+                        qty_net = line.stock_move_id.quantity_after_returns
+                        
+                        if qty_net <= 0:
+                            lines_to_unlink |= line
+                            is_changed = True
+                        elif line.quantity != qty_net:
+                            # Update langsung nilai ram (in-memory) bukan tembak langsung ke DB satu-satu
+                            line.quantity = qty_net
+                            is_changed = True
+                
+                if is_changed:
+                    recompute_invoices |= rec
+
+            # Eksekusi penghapusan baris retur total sekaligus di luar loop
+            if lines_to_unlink:
+                lines_to_unlink.unlink()
+                
+            # Hitung ulang total invoice hanya untuk dokumen yang benar-benar berubah
+            if recompute_invoices:
+                recompute_invoices._compute_amount()
+                    
         return res
+
+    def set_value_inv_picking(self):
+        """Fungsi update status picking versi optimasi tinggi"""
+        # Ambil seluruh picking unik secara massal untuk menghindari duplikasi loop
+        all_pickings = self.picking_ids
+        
+        # 1. Update massal untuk picking yang Cancel
+        cancel_pickings = all_pickings.filtered(lambda x: x.state == 'cancel')
+        if cancel_pickings:
+            cancel_pickings.sudo().write({'invoice_state': '2binvoiced'})
+
+        # 2. Proses picking yang Aktif (bukan cancel)
+        active_pickings = all_pickings.filtered(lambda x: x.state != 'cancel')
+        for picking in active_pickings:
+            inv_state_set = set()
+            
+            for sm in picking.move_ids_without_package:
+                quantity = sm.quantity_done - sm.qty_return
+
+                if sm.qty_invoice_remind >= quantity and sm.qty_return < sm.quantity_done:
+                    inv_state_set.add('invoiced')
+                elif sm.qty_invoice_remind < quantity and sm.qty_return < sm.quantity_done:
+                    inv_state_set.add('partial_invoice')
+                elif sm.qty_return >= sm.quantity_done or (sm.qty_invoice_remind == 0 and sm.qty_return > 0):
+                    inv_state_set.add('nothing_to_invoice')
+                else:
+                    inv_state_set.add('2binvoiced')
+
+            # Tentukan status akhir
+            if 'partial_invoice' in inv_state_set or ('2binvoiced' in inv_state_set and 'invoiced' in inv_state_set):
+                target_state = 'partial_invoice'
+            elif 'invoiced' in inv_state_set:
+                target_state = 'invoiced'
+            elif 'nothing_to_invoice' in inv_state_set:
+                target_state = 'nothing_to_invoice'
+            else:
+                target_state = '2binvoiced'
+
+            # Hanya lakukan write ke database JIKA status berubah untuk menghemat performa server
+            if picking.invoice_state != target_state:
+                picking.sudo().write({'invoice_state': target_state})
+
 
     def unlink(self):
         for rec in self:
@@ -334,65 +424,46 @@ class AccountMove(models.Model):
         return set(data)
 
     def set_value_inv_picking(self):
-        # related_bills = self.invoice_ids
+        """Fungsi update status picking versi optimasi tinggi"""
+        # Ambil seluruh picking unik secara massal untuk menghindari duplikasi loop
+        all_pickings = self.picking_ids
         
-        for picking in self.picking_ids.filtered(lambda x: x.state != 'cancel'):
-            inv_state_list = []
+        # 1. Update massal untuk picking yang Cancel
+        cancel_pickings = all_pickings.filtered(lambda x: x.state == 'cancel')
+        if cancel_pickings:
+            cancel_pickings.sudo().write({'invoice_state': '2binvoiced'})
+
+        # 2. Proses picking yang Aktif (bukan cancel)
+        active_pickings = all_pickings.filtered(lambda x: x.state != 'cancel')
+        for picking in active_pickings:
+            inv_state_set = set()
+            
             for sm in picking.move_ids_without_package:
                 quantity = sm.quantity_done - sm.qty_return
 
                 if sm.qty_invoice_remind >= quantity and sm.qty_return < sm.quantity_done:
-                    inv_state_list.append('invoiced')
+                    inv_state_set.add('invoiced')
                 elif sm.qty_invoice_remind < quantity and sm.qty_return < sm.quantity_done:
-                    inv_state_list.append('partial_invoice')
-                elif sm.qty_return >= sm.quantity_done or sm.qty_invoice_remind == 0 and sm.qty_return > 0:
-                    inv_state_list.append('nothing_to_invoice')
-                elif sm.qty_invoice_remind == 0 and sm.qty_return == 0:
-                    inv_state_list.append('2binvoiced')
+                    inv_state_set.add('partial_invoice')
+                elif sm.qty_return >= sm.quantity_done or (sm.qty_invoice_remind == 0 and sm.qty_return > 0):
+                    inv_state_set.add('nothing_to_invoice')
                 else:
-                    inv_state_list.append('2binvoiced')
+                    inv_state_set.add('2binvoiced')
 
-            if '2binvoiced' in inv_state_list and 'partial_invoice' not in inv_state_list and 'nothing_to_invoice' not in inv_state_list and 'invoiced' not in inv_state_list:
-                picking.sudo().write({'invoice_state': '2binvoiced'})
-                
-            elif '2binvoiced' in inv_state_list and 'partial_invoice' in inv_state_list and 'nothing_to_invoice' not in inv_state_list and 'invoiced' not in inv_state_list:
-                picking.sudo().write({'invoice_state': 'partial_invoice'})
-
-            elif '2binvoiced' in inv_state_list and 'partial_invoice' in inv_state_list and 'nothing_to_invoice' in inv_state_list and 'invoiced' not in inv_state_list:
-                picking.sudo().write({'invoice_state': 'partial_invoice'})
-
-            elif '2binvoiced' in inv_state_list and 'partial_invoice' in inv_state_list and 'nothing_to_invoice' in inv_state_list and 'invoiced' in inv_state_list:
-                picking.sudo().write({'invoice_state': 'partial_invoice'})
-
-            elif '2binvoiced' not in inv_state_list and 'partial_invoice' in inv_state_list and 'nothing_to_invoice' not in inv_state_list and 'invoiced' not in inv_state_list:
-                picking.sudo().write({'invoice_state': 'partial_invoice'})
-
-            elif '2binvoiced' not in inv_state_list and 'partial_invoice' in inv_state_list and 'nothing_to_invoice' not in inv_state_list and 'invoiced' in inv_state_list:
-                picking.sudo().write({'invoice_state': 'partial_invoice'})
-            
-            elif '2binvoiced' not in inv_state_list and 'partial_invoice' in inv_state_list and 'nothing_to_invoice' in inv_state_list and 'invoiced' not in inv_state_list:
-                picking.sudo().write({'invoice_state': 'partial_invoice'})
-            
-            elif '2binvoiced' not in inv_state_list and 'partial_invoice' in inv_state_list and 'nothing_to_invoice' in inv_state_list and 'invoiced' in inv_state_list:
-                picking.sudo().write({'invoice_state': 'partial_invoice'})
-            
-            elif '2binvoiced' not in inv_state_list and 'partial_invoice' not in inv_state_list and 'nothing_to_invoice' in inv_state_list and 'invoiced' not in inv_state_list:
-                picking.sudo().write({'invoice_state': 'nothing_to_invoice'})
-
-            elif '2binvoiced' not in inv_state_list and 'partial_invoice'  not in inv_state_list and 'nothing_to_invoice' in inv_state_list and 'invoiced' in inv_state_list:
-                picking.sudo().write({'invoice_state': 'invoiced'})
-            
-            elif '2binvoiced' not in inv_state_list and 'partial_invoice'  not in inv_state_list and 'nothing_to_invoice' not in inv_state_list and 'invoiced' in inv_state_list:
-                picking.sudo().write({'invoice_state': 'invoiced'})
-
+            # Tentukan status akhir
+            if 'partial_invoice' in inv_state_set or ('2binvoiced' in inv_state_set and 'invoiced' in inv_state_set):
+                target_state = 'partial_invoice'
+            elif 'invoiced' in inv_state_set:
+                target_state = 'invoiced'
+            elif 'nothing_to_invoice' in inv_state_set:
+                target_state = 'nothing_to_invoice'
             else:
-                picking.sudo().write({'invoice_state': '2binvoiced'})
+                target_state = '2binvoiced'
 
-        # for picking in self.picking_ids.filtered(lambda x: x.state != 'cancel' and x.id not in related_bills.mapped('picking_ids').ids):
-        #     picking.sudo().write({'invoice_state': '2binvoiced'})
+            # Hanya lakukan write ke database JIKA status berubah untuk menghemat performa server
+            if picking.invoice_state != target_state:
+                picking.sudo().write({'invoice_state': target_state})
 
-        for picking in self.picking_ids.filtered(lambda x: x.state == 'cancel'):
-            picking.sudo().write({'invoice_state': '2binvoiced'})
     
     def invoice_all_cancel(self):
         for picking in self.picking_ids.filtered(lambda x: x.state != 'cancel'):

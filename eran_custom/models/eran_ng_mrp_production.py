@@ -407,49 +407,52 @@ class MroProduction(models.Model):
                 if move_finished:
                     move_finished.unlink()
 
+        # ====================================================================
+        # PERBAIKAN INDENTASI: Validasi diatur sejajar agar semua kondisi dicek
+        # ====================================================================
         if this.good_total <= 0 and this.picking_type_id.active == True:
-            raise ValidationError(_('Good total cannot be null or minus'))
-
-            if (
-                this.good_total <= 0
-                and this.picking_type_id.active == True
-                and not self.env.context.get('skip_good_total_check')
-            ):
+            if not self.env.context.get('skip_good_total_check'):
                 raise ValidationError(_('Good total cannot be null or minus'))
-            if this.picking_type_id:
-                if not this.picking_type_id.ng_location_id and this.ng_total > 0 and this.picking_type_id.active == True:
-                    raise ValidationError(_('Must set the NG location in the operation type %s', this.picking_type_id.display_name))
                 
-            if not this.start_time and not this.end_time and this.picking_type_id.active == True:
+        if this.picking_type_id and this.picking_type_id.active == True:
+            if not this.picking_type_id.ng_location_id and this.ng_total > 0:
+                raise ValidationError(_('Must set the NG location in the operation type %s', this.picking_type_id.display_name))
+            
+            if not this.start_time and not this.end_time:
                 raise ValidationError(_('Productivity Periode cannot be empty in tab work order.'))
             
-            if this.picking_type_id.active == True:
-                for line in this.workorder_ids:
-                    if line.start_time and line.end_time:
-                        productivity_id = self.env.ref('mrp.block_reason7').id
-                        record_productivity = line.time_ids.filtered(lambda x:x.loss_id.id == productivity_id)
-                        if record_productivity:
-                            record_productivity.unlink()
+            for line in this.workorder_ids:
+                if line.start_time and line.end_time:
+                    productivity_id = self.env.ref('mrp.block_reason7').id
+                    record_productivity = line.time_ids.filtered(lambda x: x.loss_id.id == productivity_id)
+                    if record_productivity:
+                        record_productivity.unlink()
 
-                        jam_start = line.start_time.hour+7
-                        menit_start =  line.start_time.minute
-                        start_jam_dalam_float = jam_start + (menit_start / 60)
+                    jam_start = line.start_time.hour + 7
+                    menit_start = line.start_time.minute
+                    start_jam_dalam_float = jam_start + (menit_start / 60)
 
-                        jam_end = line.end_time.hour+7
-                        menit_end =  line.end_time.minute
-                        end_jam_dalam_float = jam_end + (menit_end / 60)
-                        line.time_ids.create({
-                            'workorder_id': line.id,
-                            'workcenter_id': line.workcenter_id.id,
-                            'user_id': self.env.user.id,
-                            'start_date': line.start_time,
-                            'end_date': line.end_time,
-                            'loss_id': productivity_id,
-                            'start_time': start_jam_dalam_float,
-                            'end_time': end_jam_dalam_float,
-                        })
+                    jam_end = line.end_time.hour + 7
+                    menit_end = line.end_time.minute
+                    end_jam_dalam_float = jam_end + (menit_end / 60)
+                    
+                    line.time_ids.create({
+                        'workorder_id': line.id,
+                        'workcenter_id': line.workcenter_id.id,
+                        'user_id': self.env.user.id,
+                        'start_date': line.start_time,
+                        'end_date': line.end_time,
+                        'loss_id': productivity_id,
+                        'start_time': start_jam_dalam_float,
+                        'end_time': end_jam_dalam_float,
+                    })
+
+        # Jalankan fungsi utama mark as done bawaan Odoo
         res = super(MroProduction, self).button_mark_done()
 
+        # ====================================================================
+        # PROSES SETELAH MARK AS DONE
+        # ====================================================================
         for this in self:
             if this.ng_total > 0:
                 stock_move_ng = self.env['stock.move'].sudo().search([
@@ -465,8 +468,9 @@ class MroProduction(models.Model):
 
                     total_cost_machine = this._get_cost_machine()
                     total_cost_component = total_cost_material + total_cost_machine
-                    price_unit = total_cost_component/(this.good_total+this.ng_total)
-                    stock_move_ng.write({ 'state': 'draft'})
+                    price_unit = total_cost_component / (this.good_total + this.ng_total)
+                    
+                    stock_move_ng.write({'state': 'draft'})
                     stock_move_ng.refresh()
 
                     stock_move_ng.write({
@@ -475,9 +479,9 @@ class MroProduction(models.Model):
                     })
                     stock_move_ng._action_assign()
                     stock_move_ng.move_line_ids.lot_id = this.lot_producing_id
-                    stock_move_ng.write({'quantity_done': this.ng_total,'price_unit': price_unit})
+                    stock_move_ng.write({'quantity_done': this.ng_total, 'price_unit': price_unit})
                     stock_move_ng._action_confirm()
-                    stock_move_ng.write({'quantity_done': this.ng_total,'price_unit': price_unit})
+                    stock_move_ng.write({'quantity_done': this.ng_total, 'price_unit': price_unit})
                     stock_move_ng._action_done()
 
                     scrap = self.env['stock.scrap'].create({
@@ -486,7 +490,7 @@ class MroProduction(models.Model):
                         'production_id': this.id,
                         'scrap_qty': stock_move_ng.quantity_done,
                         'location_id': stock_move_ng.location_dest_id.id,
-                        'scrap_location_id':this.ng_location_id.id,
+                        'scrap_location_id': this.ng_location_id.id,
                         'lot_id': this.lot_producing_id.id or False,
                     })
                     scrap.action_validate()
@@ -494,12 +498,14 @@ class MroProduction(models.Model):
                     quantity_done = sum(this.move_finished_ids.filtered(lambda x: x.state == 'done').mapped('quantity_done'))
                     this.write({'product_qty': quantity_done})
 
+            # 🔍 FIX INDEXERROR: Berikan validasi pengecekan data time_ids sebelum mengambil indeks [-1]
             for line in this.workorder_ids:
-                record_productivity = line.time_ids[-1]
-                record_productivity.write({'loss_id': self.env.ref('mrp.block_reason7').id})
+                if line.time_ids:
+                    record_productivity = line.time_ids[-1]
+                    record_productivity.write({'loss_id': self.env.ref('mrp.block_reason7').id})
 
         return res
-    
+
     def _get_cost_machine(self):
         total_cost_operations = 0
         diff_per_production = {}
