@@ -1,5 +1,7 @@
 /** @odoo-module **/
 
+/** @odoo-module **/
+
 import { registry } from "@web/core/registry";
 
 const mesEditRequestService = {
@@ -7,75 +9,157 @@ const mesEditRequestService = {
 
     start(env, { bus_service, notification, orm }) {
 
-        console.log(
-            "=========================================="
-        );
-
-        console.log(
-            "MES EDIT REQUEST BUS LISTENER STARTED"
-        );
-
-        console.log(
-            "=========================================="
-        );
+        console.log("==========================================");
+        console.log("MES EDIT REQUEST BUS LISTENER STARTED");
+        console.log("==========================================");
+        console.log("MES: waiting for partner-targeted bus notification");
 
         // =====================================================
-        // SUBSCRIBE KE BUS
-        // =====================================================
-
-        console.log(
-            "MES: waiting for partner-targeted bus notification"
-        );
-
-        // =====================================================
-        // LISTEN NOTIFICATION
+        // LISTEN BUS NOTIFICATION
         // =====================================================
 
         bus_service.addEventListener(
             "notification",
             ({ detail: notifications }) => {
 
-                console.log(
-                    "MES BUS NOTIFICATION:",
-                    notifications
-                );
+                console.log("MES BUS NOTIFICATION:", notifications);
 
                 for (const notification_data of notifications) {
 
-                    const {
-                        type,
-                        payload,
-                    } = notification_data;
+                    const { type, payload } = notification_data;
 
-                    console.log(
-                        "MES BUS EVENT:",
-                        type,
-                        payload
-                    );
-
-                    // =================================================
-                    // REQUEST EDIT
-                    // =================================================
+                    console.log("MES BUS EVENT:", type, payload);
 
                     if (type === "mes_edit_request") {
-
-                        console.log(
-                            "🔥 MES EDIT REQUEST RECEIVED:",
-                            payload
-                        );
-
+                        console.log("🔥 MES EDIT REQUEST RECEIVED:", payload);
                         showEditRequestPopup(payload, orm, notification);
                     }
                 }
             }
         );
 
-        console.log(
-            "MES EDIT REQUEST LISTENER READY"
-        );
-    },
-};
+        console.log("MES EDIT REQUEST LISTENER READY");
 
+        // =====================================================
+        // HANDLE TOMBOL EDIT (event delegation)
+        // =====================================================
+
+        document.addEventListener("click", async (e) => {
+            const btn = e.target.closest("[data-mes-edit]");
+            if (!btn) return;
+
+            const lineId = btn.dataset.mesEdit;
+            btn.disabled = true;
+            btn.innerText = "⏳...";
+
+            const backdrop = document.createElement("div");
+            Object.assign(backdrop.style, {
+                position: "fixed", inset: "0",
+                background: "rgba(0,0,0,0.55)",
+                zIndex: "99999", display: "flex",
+                alignItems: "center", justifyContent: "center",
+            });
+
+            const box = document.createElement("div");
+            Object.assign(box.style, {
+                background: "white", borderRadius: "12px",
+                padding: "28px 24px", width: "340px",
+                maxWidth: "90vw", textAlign: "center",
+                boxShadow: "0 8px 32px rgba(0,0,0,0.25)",
+                fontFamily: "Arial,sans-serif",
+            });
+
+            box.innerHTML = `
+                <div style="font-size:36px;margin-bottom:10px;">⚠️</div>
+                <h3 style="margin:0 0 8px;">Ajukan Edit?</h3>
+                <p style="color:#777;font-size:13px;margin-bottom:20px;">
+                    Permintaan edit akan dikirim ke Leader untuk disetujui.
+                </p>
+                <div style="display:flex;gap:10px;">
+                    <button id="mes-edit-cancel" style="flex:1;padding:12px;border:none;
+                        border-radius:6px;background:#6c757d;color:white;
+                        font-size:14px;cursor:pointer;">Batal</button>
+                    <button id="mes-edit-confirm" style="flex:1;padding:12px;border:none;
+                        border-radius:6px;background:#0b72b9;color:white;
+                        font-size:14px;font-weight:bold;cursor:pointer;">Ya, Ajukan</button>
+                </div>
+            `;
+
+            backdrop.appendChild(box);
+            document.body.appendChild(backdrop);
+
+            box.querySelector("#mes-edit-cancel").onclick = () => {
+                backdrop.remove();
+                btn.disabled = false;
+                btn.innerText = "✏️ Edit";
+            };
+
+            box.querySelector("#mes-edit-confirm").onclick = async () => {
+                box.querySelector("#mes-edit-confirm").disabled = true;
+                box.querySelector("#mes-edit-confirm").innerText = "⏳...";
+
+                try {
+                    const resp = await fetch(`/mes/edit/${lineId}/request-json`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({}),
+                    });
+                    const data = await resp.json();
+                    backdrop.remove();
+
+                    const rb = document.createElement("div");
+                    Object.assign(rb.style, {
+                        position: "fixed", inset: "0",
+                        background: "rgba(0,0,0,0.55)",
+                        zIndex: "99999", display: "flex",
+                        alignItems: "center", justifyContent: "center",
+                    });
+
+                    const rbox = document.createElement("div");
+                    Object.assign(rbox.style, {
+                        background: "white", borderRadius: "12px",
+                        padding: "28px 24px", width: "340px",
+                        maxWidth: "90vw", textAlign: "center",
+                        boxShadow: "0 8px 32px rgba(0,0,0,0.25)",
+                    });
+
+                    const ok = data.success;
+                    rbox.innerHTML = `
+                        <div style="font-size:36px;margin-bottom:10px;">
+                            ${ok ? "✅" : "❌"}
+                        </div>
+                        <h3 style="margin:0 0 8px;color:${ok ? "#28a745" : "#dc3545"};">
+                            ${ok ? "Request Terkirim" : "Gagal"}
+                        </h3>
+                        <p style="color:#555;font-size:13px;margin-bottom:20px;">
+                            ${data.message || "-"}
+                        </p>
+                        <button id="mes-edit-ok" style="width:100%;padding:12px;border:none;
+                            border-radius:6px;background:${ok ? "#28a745" : "#dc3545"};
+                            color:white;font-size:14px;font-weight:bold;cursor:pointer;">
+                            OK
+                        </button>
+                    `;
+
+                    rb.appendChild(rbox);
+                    document.body.appendChild(rb);
+
+                    rbox.querySelector("#mes-edit-ok").onclick = () => {
+                        rb.remove();
+                        window.location.reload();
+                    };
+
+                } catch (err) {
+                    backdrop.remove();
+                    btn.disabled = false;
+                    btn.innerText = "✏️ Edit";
+                    notification.add("Terjadi kesalahan. Silakan coba lagi.", { type: "danger" });
+                }
+            };
+        });
+
+    }, // ← tutup start()
+};
 
 // =============================================================
 // REGISTER SERVICE
@@ -83,11 +167,7 @@ const mesEditRequestService = {
 
 registry
     .category("services")
-    .add(
-        "mes_edit_request_service",
-        mesEditRequestService
-    );
-
+    .add("mes_edit_request_service", mesEditRequestService);
 
 // =============================================================
 // POPUP
@@ -537,7 +617,6 @@ function showMemoReminderPopup(payload, orm, notification) {
 // =============================================================
 
 function escapeHtml(value) {
-
     return String(value)
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")

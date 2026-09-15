@@ -38,8 +38,7 @@ const mesEditRequestNotificationService = {
                     // REQUEST EDIT BARU
                     // =================================================
 
-                    // Request utama ditangani oleh popup custom di mes_edit_request.js.
-                    if (false && type === "mes_edit_request") {
+                    if (type === "mes_edit_request") {
 
                         console.log(
                             "MES EDIT REQUEST RECEIVED:",
@@ -134,6 +133,7 @@ const mesEditRequestNotificationService = {
                         "mes_edit_request_result"
                     ) {
 
+
                         console.log(
                             "MES EDIT REQUEST RESULT:",
                             payload
@@ -160,28 +160,64 @@ const mesEditRequestNotificationService = {
                     }
 
                     // =================================================
-                    // PENGAJUAN MEMO KE IT (KHUSUS ADMIN)
+                    // LEADER APPROVAL BERHASIL
                     // =================================================
 
-                    if (type === "mes_edit_request_admin_memo") {
+                    if (
+                        type ===
+                        "mes_edit_request_approved"
+                    ) {
+
+                        console.log(
+                            "MES LEADER APPROVAL RECEIVED:",
+                            payload
+                        );
+
                         let closeNotification;
+
                         closeNotification = notification.add(
-                            payload.message ||
-                            "Ada pengajuan memo dari Produksi terkait perubahan data.",
+                            `
+                            Segera buat Memo ke Tim IT
+                            untuk perubahan data.
+
+                            MO : ${payload.production_name || "-"}
+                            Work Order : ${payload.workorder_name || "-"}
+                            Operator : ${payload.operator_name || "-"}
+                            `,
                             {
-                                title: payload.title || "Pengajuan Memo Perubahan Data",
-                                type: "warning",
-                                sticky: true,
+                                title:
+                                    "⚠️ Approval Berhasil",
+
+                                type:
+                                    "warning",
+
+                                sticky:
+                                    true,
+
                                 buttons: [
                                     {
-                                        name: "OK",
-                                        primary: true,
-                                        onClick: () => closeNotification(),
+                                        name:
+                                            "OK",
+
+                                        primary:
+                                            true,
+
+                                        onClick: () => {
+
+                                            console.log(
+                                                "Memo IT notification closed"
+                                            );
+
+                                            if (closeNotification) {
+                                                closeNotification();
+                                            }
+                                        },
                                     },
                                 ],
                             }
                         );
                     }
+
                 }
             }
         );
@@ -198,3 +234,65 @@ registry
         "mes_edit_request_notification",
         mesEditRequestNotificationService
     );
+
+// =================================================
+// MEMO IT BARU
+// =================================================
+
+if (
+    type ===
+    "mes_it_memo_request"
+) {
+
+    console.log(
+        "MES IT MEMO REQUEST RECEIVED:",
+        payload
+    );
+
+    let closeNotification;
+
+    closeNotification = notification.add(
+        `
+        Produksi mengajukan Memo IT
+        terkait perubahan data.
+
+        MO : ${payload.production_name || "-"}
+        Work Order : ${payload.workorder_name || "-"}
+        Operator : ${payload.operator_name || "-"}
+        Perubahan Qty :
+        ${payload.current_qty ?? 0}
+        → ${payload.new_qty ?? 0}
+        `,
+        {
+            title:
+                "⚠️ PENGAJUAN MEMO IT BARU",
+
+            type:
+                "warning",
+
+            sticky:
+                true,
+
+            buttons: [
+                {
+                    name:
+                        "OK",
+
+                    primary:
+                        true,
+
+                    onClick: () => {
+
+                        console.log(
+                            "IT Memo notification closed"
+                        );
+
+                        if (closeNotification) {
+                            closeNotification();
+                        }
+                    },
+                },
+            ],
+        }
+    );
+}
