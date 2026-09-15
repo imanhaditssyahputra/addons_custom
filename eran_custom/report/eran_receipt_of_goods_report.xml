@@ -88,12 +88,12 @@
                                       <tr>
                                         <td>SCHEDULE DELIVERY DATE</td>
                                         <td>:</td>
-                                        <td><span t-field="o.scheduled_date" t-options="{'widget': 'date'}"/></td>
+                                        <td><span t-esc="o.scheduled_date.strftime('%d %B %Y')"/></td>
                                       </tr>
                                       <tr>
                                         <td>ACTUAL DELIVERY DATE</td>
                                         <td>:</td>
-                                        <td><span t-field="o.date_done" t-options="{'widget': 'date'}"/></td>
+                                        <td><span t-esc="o.act_delv_date.strftime('%d %B %Y')"/></td>
                                       </tr>
                                     </table>
                                 </div>
@@ -127,7 +127,7 @@
                                       <tr>
                                         <td>EFFECTIVE DATE</td>
                                         <td>:</td>
-                                        <td><span t-field="o.date_done" t-options="{'widget': 'date'}"/></td>
+                                        <td><span t-esc="o.date_done.strftime('%d %B %Y')"/></td>
                                       </tr>
                                     </table>
                                 </div>
@@ -276,12 +276,12 @@
                                       <tr>
                                         <td>SCHEDULE DELIVERY DATE</td>
                                         <td>:</td>
-                                        <td><span t-field="o.scheduled_date" t-options="{'widget': 'date'}"/></td>
+                                        <td><span t-esc="o.scheduled_date.strftime('%d %B %Y')"/></td>
                                       </tr>
                                       <tr>
                                         <td>ACTUAL DELIVERY DATE</td>
                                         <td>:</td>
-                                        <td><span t-field="o.date_done" t-options="{'widget': 'date'}"/></td>
+                                        <td><spant t-esc="o.act_delv_date.strftime('%d %B %Y')"/></td>
                                       </tr>
                                     </table>
                                 </div>
@@ -315,7 +315,7 @@
                                       <tr>
                                         <td>EFFECTIVE DATE</td>
                                         <td>:</td>
-                                        <td><span t-field="o.date_done" t-options="{'widget': 'date'}"/></td>
+                                        <td><span t-esc="o.date_done.strftime('%d %B %Y')"/></td>
                                       </tr>
                                     </table>
                                 </div>

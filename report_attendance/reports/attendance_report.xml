@@ -57,8 +57,21 @@
                 <h4 class="mt0" style="text-align: center; font-weight: bold;"><t t-out="title" /></h4>
                 <p style="text-align: center; font-size: 12px; margin-top: -5px;">
                     Periode: 
-                    <span t-out="o.date_from.strftime('%d-%m-%Y') if o.date_from else 'Awal'"/> s/d 
-                    <span t-out="o.date_to.strftime('%d-%m-%Y') if o.date_to else 'Sekarang'"/>
+                    <t t-if="o.date_from">
+                        <span t-field="o.date_from" t-options='{"widget": "date", "format": "dd-MM-yyyy"}'/>
+                    </t>
+                    <t t-else="">
+                        <span>Awal</span>
+                    </t>
+                    
+                    s/d 
+                    
+                    <t t-if="o.date_to">
+                        <span t-field="o.date_to" t-options='{"widget": "date", "format": "dd-MM-yyyy"}'/>
+                    </t>
+                    <t t-else="">
+                        <span>Sekarang</span>
+                    </t>
                 </p>
             </div>
             

@@ -64,7 +64,6 @@
         <field name="interval_number">1</field>
         <field name="interval_type">minutes</field>
         <field name="numbercall">-1</field>
-        <field name="user_id" ref="base.user_root"/>
     </record>
 
     <record id="ir_cron_sync_attendance_log" model="ir.cron">

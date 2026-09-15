@@ -8,14 +8,12 @@ _logger = logging.getLogger(__name__)
 
 
 class ReportAttendanceReportXlsx(models.AbstractModel):
-    _name = "report.attendance.report_attendance_report_xlsx"
+    _name = "report.report_attendance.report_attendance_report_xlsx"
     _description = "Attendance Report XLSX"
     _inherit = "report.report_xlsx.abstract"
 
     def generate_xlsx_report(self, workbook, data, objects):
         """Fungsi Utama Pembuatan File Excel"""
-        self.ensure_one()
-        
         # 1. Definisikan Format Desain Warna & Border (Styles)
         format_title = workbook.add_format({
             'bold': True, 'align': 'center', 'valign': 'vcenter', 'font_size': 14
@@ -51,11 +49,11 @@ class ReportAttendanceReportXlsx(models.AbstractModel):
         ws.fit_to_pages(1, 0)
 
         # 3. Tulis Judul Laporan
-        ws.merge_range("A1:V1", "LAPORAN REKAPITULASI ABSENSI KARYAWAN", format_title)
+        ws.merge_range("A1:T1", "LAPORAN REKAPITULASI ABSENSI KARYAWAN", format_title)
         
         date_from_str = objects.date_from.strftime('%d-%m-%Y') if objects.date_from else 'Awal'
         date_to_str = objects.date_to.strftime('%d-%m-%Y') if objects.date_to else 'Sekarang'
-        ws.merge_range("A2:V2", f"Periode: {date_from_str} s/d {date_to_str}", format_period)
+        ws.merge_range("A2:T2", f"Periode: {date_from_str} s/d {date_to_str}", format_period)
         
         # 4. Atur Lebar Kolom agar tidak terpotong
         column_widths = {

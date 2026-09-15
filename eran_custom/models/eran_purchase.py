@@ -445,6 +445,14 @@ class PurchaseOrderLine(models.Model):
     received_convert = fields.Float(string="Received Convert", compute="_compute_received_convert", store=True)
     origin = fields.Char(string='Source Document', related='order_id.origin', store=True)
     request_date = fields.Date(string='Request Date',related="purchase_request_id.date_start", store=True)
+    # ..... conversi kurs $ ......
+    amount_convert_order_idr = fields.Float(string="Amount convert Order IDR", compute="_compute_amount_convert_idr", store=True)
+    amount_convert_receipt_idr = fields.Float(string="Amount convert Receipt IDR", compute="_compute_amount_convert_idr", store=True)
+    due_date_invoice = fields.Datetime(
+        string="Due Date Invoice", 
+        compute="_compute_due_date_invoice", 
+        store=True
+    )
 
     @api.depends('product_qty', 'qty_received', 'additional_qty')
     def _compute_received_convert(self):
@@ -682,4 +690,69 @@ class PurchaseOrderLine(models.Model):
             'purchase_line_id': self.id,
             'discount':self.discount,
         }
+
+    @api.depends('order_id.picking_ids', 'product_id', 'qty_received', 'invoice_lines.move_id.currency_id', 'invoice_lines.move_id.invoice_date')
+    def _compute_amount_convert_idr(self):
+        for line in self:
+            # 1. Cari invoice terkait yang tipenya vendor bill (in_invoice)
+            active_invoice = line.invoice_lines.mapped('move_id').filtered(lambda m: m.move_type == 'in_invoice' and m.state != 'cancel')
             
+            # 2. Tentukan currency dan tanggal rate berdasarkan Invoice (jika ada), jika tidak pakai PO
+            if active_invoice:
+                # Mengambil invoice pertama jika ada beberapa invoice terikat
+                inv = active_invoice[0]
+                current_currency = inv.currency_id
+                # Gunakan tanggal invoice, jika belum diisi pakai tanggal hari ini
+                conversion_date = inv.invoice_date or fields.Date.today()
+            else:
+                current_currency = line.order_id.currency_id
+                conversion_date = line.order_id.date_order or fields.Date.today()
+
+            # Validasi pencegahan AssertionError jika data currency kosong
+            if not current_currency:
+                line.amount_convert_order_idr = 0.0
+                line.amount_convert_receipt_idr = 0.0
+                continue
+
+            # 3. Proses Konversi jika Currency bukan IDR
+            if current_currency.name != 'IDR':
+                currency_idr = self.env['res.currency'].search([('name', '=', 'IDR')], limit=1)
+                
+                if currency_idr:
+                    # Rate akan otomatis berubah mengikuti tanggal & mata uang Invoice
+                    rate = self.env['res.currency']._get_conversion_rate(
+                        current_currency, 
+                        currency_idr,
+                        line.company_id,
+                        conversion_date
+                    )
+                    
+                    line.amount_convert_order_idr = line.price_total * rate
+                    line.amount_convert_receipt_idr = getattr(line, 'received_amt', 0.0) * rate
+                else:
+                    line.amount_convert_order_idr = 0.0
+                    line.amount_convert_receipt_idr = 0.0
+            else:
+                # Jika currency sudah IDR (Rate = 1)
+                line.amount_convert_order_idr = line.price_total
+                line.amount_convert_receipt_idr = getattr(line, 'received_amt', 0.0)
+
+    @api.depends('invoice_lines', 'invoice_lines.move_id.invoice_date_due', 'invoice_lines.move_id.state')
+    def _compute_due_date_invoice(self):
+        for line in self:
+            all_bills = self.env['account.move'].search([
+                    ('move_type', '=', 'in_invoice'),
+                    ('state', '!=', 'cancel'),
+                    ('invoice_line_ids.purchase_order_id', '=', line.order_id.id)
+                ])
+                
+            # Kumpulkan semua tanggal jatuh tempo yang valid
+            valid_due_dates = [bill.invoice_date_due for bill in all_bills if bill.invoice_date_due]
+                
+            if valid_due_dates:
+                # Mengambil jatuh tempo paling terdekat/awal (sangat cocok untuk mendeteksi tagihan DP)
+                line.due_date_invoice = max(valid_due_dates)
+            else:
+                line.due_date_invoice = False
+
+       

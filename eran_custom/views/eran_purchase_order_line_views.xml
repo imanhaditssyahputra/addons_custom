@@ -35,6 +35,8 @@
                 <field name="price_unit" optional="show"/>
                 <field name="taxes_id" optional="show"/>
                 <field name="price_subtotal" optional="show"/>
+                <field name="amount_convert_order_idr" optional="show"/>
+                <field name="amount_convert_receipt_idr" optional="show"/>
                 <field name="propagate_cancel" optional="show"/>
                 <field name="confirmation_date" optional="show"/>
                 <field name="category_ids" optional="show" widget="many2many_tags"/>

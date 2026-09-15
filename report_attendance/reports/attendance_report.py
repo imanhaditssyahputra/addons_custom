@@ -191,7 +191,7 @@ class AttendanceReport(models.TransientModel):
     date_to = fields.Date(string="Tanggal Selesai", required=True)
     employed_id = fields.Many2one(comodel_name="hr.employee", string="Karyawan")
     departement_id = fields.Many2one(comodel_name="hr.department", string="Departemen")
-    results = fields.Many2many(comodel_name="attendance.view", compute="_compute_results", help="Data rekap yang akan ditarik ke laporan",)
+    results = fields.Many2many(comodel_name="attendance.view", compute="_compute_results", help="Data rekap yang akan ditarik ke laporan")
 
     def _compute_results(self):
         self.ensure_one()
