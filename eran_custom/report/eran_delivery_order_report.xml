@@ -35,7 +35,7 @@
                         </div>
                         <div class="col-6">
                             <br/>
-                            <span style="margin-left:50px;">Delivery Date : </span><span t-esc="o.scheduled_date.strftime('%d %B %Y')"/>
+                            <span style="margin-left:50px; font-size:20px;">Delivery Date : </span><span t-esc="o.scheduled_date.strftime('%d %B %Y')" style="font-size:20px;"/>
                             <div t-if="o.name" t-field="o.name" t-options="{'widget': 'barcode', 'width': 600, 'height': 60, 'img_style': 'margin-top:0px;max-width:100%;'}"/><br/>
                         </div>
                     </div>
@@ -69,6 +69,7 @@
                             </table>
                         </div>
                     </div>
+                    <br/>
                     <div class="row">
                         <div class="col-12">
                             <table class="table table-bordered table-borderless">
