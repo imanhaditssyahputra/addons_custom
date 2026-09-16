@@ -212,6 +212,9 @@ class MesScanApproval(models.Model):
         "line_ids.downtime_ids.note",
         "line_ids.downtime_ids.start_time",
         "line_ids.downtime_ids.end_time",
+        "line_ids.edit_request_ids",
+        "line_ids.edit_request_ids.state",
+        "line_ids.has_pending_edit",
     )
     def _compute_workorder_info(self):
 
@@ -561,26 +564,30 @@ class MesScanApproval(models.Model):
                     #
                     # HANYA UNTUK WO DONE
                     #
-                    # waiting -> tampil "Menunggu persetujuan edit"
-                    # selain waiting -> tampil tombol Edit
+                    # waiting  -> Menunggu persetujuan edit
+                    # approved -> Edit sudah disetujui
+                    # rejected / belum ada request -> tombol Edit
                     # =================================================
 
                     edit_button = ""
+                    latest_request = line_sudo.edit_request_ids.sorted(
+                        "create_date", reverse=True
+                    )[:1]
 
-                    if line_sudo.has_pending_edit:
-                        # cek state edit request-nya
-                        pending_request = self.env["mes.scan.approval.edit.request"].sudo().search([
-                            ("line_id", "=", line_sudo.id),
-                            ("state", "in", ["waiting", "approved"]),
-                        ], limit=1, order="create_date desc")
+                    if latest_request and latest_request.state == "waiting":
+                        edit_status_text = "⏳ Menunggu persetujuan edit"
+                        edit_status_color = "#888"
+                        edit_button = f"""
+                        <div style="text-align:right; margin-top:10px;">
+                            <span style="font-size:12px; color:{edit_status_color};">
+                                {edit_status_text}
+                            </span>
+                        </div>
+                        """
 
-                        if pending_request and pending_request.state == "approved":
-                            edit_status_text = "✅ Sudah disetujui, konfirmasi memo ke Leader"
-                            edit_status_color = "#28a745"
-                        else:
-                            edit_status_text = "⏳ Menunggu persetujuan edit"
-                            edit_status_color = "#888"
-
+                    elif latest_request and latest_request.state == "approved":
+                        edit_status_text = "✅ Edit sudah disetujui"
+                        edit_status_color = "#28a745"
                         edit_button = f"""
                         <div style="text-align:right; margin-top:10px;">
                             <span style="font-size:12px; color:{edit_status_color};">
@@ -1167,7 +1174,7 @@ class MesScanApprovalLine(models.Model):
 
             line.has_pending_edit = bool(
                 line.edit_request_ids.filtered(
-                    lambda r: r.state == "waiting"
+                    lambda r: r.state in ("waiting", "approved")
                 )
             )
 
@@ -1197,6 +1204,30 @@ class MesScanApprovalLineDowntime(models.Model):
 class HrEmployee(models.Model):
     _inherit = "hr.employee"
 
+    @api.model
+    def _eran_jakarta_day_bounds(self, now_utc=None):
+        """Awal dan akhir hari kalender Asia/Jakarta, dalam UTC naive."""
+        tz = pytz.timezone("Asia/Jakarta")
+        now_utc = now_utc or fields.Datetime.now()
+        if getattr(now_utc, "tzinfo", None):
+            now_utc = now_utc.astimezone(pytz.utc).replace(tzinfo=None)
+        now_local = pytz.utc.localize(now_utc).astimezone(tz)
+        start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = start_local + timedelta(days=1)
+        return (
+            start_local.astimezone(pytz.utc).replace(tzinfo=None),
+            end_local.astimezone(pytz.utc).replace(tzinfo=None),
+        )
+
+    @api.model
+    def _eran_today_attendance(self, employee, now_utc=None):
+        start_utc, end_utc = self._eran_jakarta_day_bounds(now_utc)
+        return self.env["hr.attendance"].sudo().search([
+            ("employee_id", "=", employee.id),
+            ("check_in", ">=", start_utc),
+            ("check_in", "<", end_utc),
+        ], order="check_in desc", limit=1)
+
     def _mes_get_or_create_approval(self, barcode):
         """
         Return record mes.scan.approval untuk barcode ini,
@@ -1213,38 +1244,24 @@ class HrEmployee(models.Model):
             return None
 
         scan_time = fields.Datetime.now()
-
-        # =========================================================
-        # KONVERSI KE WAKTU LOKAL (Asia/Jakarta)
-        # =========================================================
-
         tz = pytz.timezone("Asia/Jakarta")
         scan_time_local = pytz.utc.localize(scan_time).astimezone(tz)
         scan_hour = scan_time_local.hour + scan_time_local.minute / 60.0
-
-        # Hari ini dalam UTC (untuk query DB)
-        today = scan_time.replace(hour=0, minute=0, second=0, microsecond=0)
-        tomorrow = today + timedelta(days=1)
+        today, tomorrow = self._eran_jakarta_day_bounds(scan_time)
 
         # =========================================================
         # VALIDASI 1: WAJIB ABSEN DULU DI HR.ATTENDANCE
-        # Kalau belum ada check_in hari ini, tolak scan MO
         # =========================================================
 
-        attendance = self.env["hr.attendance"].sudo().search([
-            ("employee_id", "=", employee.id),
-            ("check_in", ">=", today),
-            ("check_in", "<", tomorrow),
-        ], order="check_in desc", limit=1)
-
+        attendance = self._eran_today_attendance(employee, scan_time)
         if not attendance:
-            _logger.warning(
-                "[DEV MODE] %s belum absen wajah, pakai scan_time sebagai check_in dummy",
-                employee.name
-            )
-            check_in_value = scan_time
-        else:
-            check_in_value = attendance.check_in
+            return {
+                "error": (
+                    f"{employee.name} belum melakukan absen masuk hari ini. "
+                    "Silakan scan absen di mesin absensi terlebih dahulu."
+                )
+            }
+        check_in_value = attendance.check_in
 
         # =========================================================
         # VALIDASI 2: CEK JAM SHIFT
@@ -1406,26 +1423,13 @@ class HrEmployee(models.Model):
             return {"warning": "Barcode tidak dikenali."}
 
         now_utc = fields.Datetime.now()
-        tz = pytz.timezone("Asia/Jakarta")
-        now_local = pytz.utc.localize(now_utc).astimezone(tz)
-
-        today_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-        tomorrow_utc = today_utc + timedelta(days=1)
-
-        # Cek sudah absen hari ini belum
-        existing = self.env["hr.attendance"].sudo().search([
-            ("employee_id", "=", employee.id),
-            ("check_in", ">=", today_utc),
-            ("check_in", "<", tomorrow_utc),
-        ], order="check_in desc", limit=1)
+        existing = self._eran_today_attendance(employee, now_utc)
 
         if existing:
-            # Sudah absen — JANGAN buat baru, langsung redirect welcome
-            # tapi tampilkan info sudah absen (bukan buat record baru)
             return {
                 "action": {
                     "type": "ir.actions.act_url",
-                    "url": f"/attendance/welcome/{employee.id}?already=1",
+                    "url": f"/attendance/kiosk/welcome/{employee.id}?already=1",
                     "target": "self",
                 }
             }
@@ -1450,7 +1454,7 @@ class HrEmployee(models.Model):
         return {
             "action": {
                 "type": "ir.actions.act_url",
-                "url": f"/attendance/welcome/{employee.id}",
+                "url": f"/attendance/kiosk/welcome/{employee.id}",
                 "target": "self",
             }
         }
@@ -1471,21 +1475,12 @@ class HrEmployee(models.Model):
         tz = pytz.timezone("Asia/Jakarta")
         scan_time_local = pytz.utc.localize(scan_time).astimezone(tz)
 
-        # Batas hari ini dalam UTC
-        today = scan_time.replace(hour=0, minute=0, second=0, microsecond=0)
-        tomorrow = today + timedelta(days=1)
-
         employee = self.sudo().search([("barcode", "=", barcode)], limit=1)
 
         if not employee:
             return {"warning": "Barcode tidak dikenali."}
 
-        # Cek apakah sudah absen hari ini
-        attendance = self.env["hr.attendance"].sudo().search([
-            ("employee_id", "=", employee.id),
-            ("check_in", ">=", today),
-            ("check_in", "<", tomorrow),
-        ], order="check_in desc", limit=1)
+        attendance = self._eran_today_attendance(employee, scan_time)
 
         if not attendance:
             return {
@@ -1862,33 +1857,6 @@ class MesScanApprovalEditRequest(models.Model):
     # LEADER USER
     # =========================================================
 
-    def _get_leader_user(self):
-        """
-        Mengambil User Odoo dari Leader.
-
-        Prioritas:
-        1. Employee.user_id
-        2. Fallback cari res.users berdasarkan nama Leader
-        tanpa memperhatikan kapitalisasi.
-
-        Contoh:
-            MUSTAMIR
-            Mustamir
-            mustamir
-
-        akan dianggap sama sementara.
-        """
-
-        self.ensure_one()
-
-        return self._find_leader_user(
-            self.leader_id
-        )
-
-        # =========================================================
-    # LEADER USER
-    # =========================================================
-
     @api.model
     def _find_leader_user(self, leader):
         """
@@ -1979,12 +1947,48 @@ class MesScanApprovalEditRequest(models.Model):
         self.ensure_one()
 
         return self._find_leader_user(
-            self.leader_id
+            self.sudo().leader_id
         )
         
     # =========================================================
     # REALTIME NOTIFICATION
     # =========================================================
+
+    def _notification_payload(self):
+        self.ensure_one()
+        rec = self.sudo()
+        line = rec.line_id
+        wo = rec.workorder_id
+        production = wo.production_id
+        return {
+            "request_id": rec.id,
+            "operator_name": rec.requested_by.name or "-",
+            "leader_name": rec.leader_id.name or "-",
+            "workorder_name": wo.name or "-",
+            "production_name": production.name or "-",
+            "product_name": wo.product_id.display_name or "-",
+            "current_qty": line.qty_actual,
+            "state": rec.state,
+        }
+
+    @api.model
+    def get_pending_for_current_leader(self):
+        """Request waiting milik leader yang sedang login.
+
+        Dipakai saat leader baru login, karena notifikasi bus
+        tidak tersimpan kalau dia sedang offline.
+        """
+        user = self.env.user
+        requests = self.sudo().search(
+            [("state", "=", "waiting")],
+            order="create_date asc",
+        )
+        payloads = []
+        for rec in requests:
+            leader_user = rec._get_leader_user()
+            if leader_user and leader_user.id == user.id:
+                payloads.append(rec._notification_payload())
+        return payloads
 
     def _send_leader_notification(self):
         """
@@ -1994,12 +1998,13 @@ class MesScanApprovalEditRequest(models.Model):
 
         self.ensure_one()
 
-        leader_user = self._get_leader_user()
+        rec = self.sudo()
+        leader_user = rec._get_leader_user()
 
         if not leader_user:
             _logger.warning(
                 "MES EDIT REQUEST: Leader %s belum memiliki user Odoo.",
-                self.leader_id.name if self.leader_id else "-",
+                rec.leader_id.name if rec.leader_id else "-",
             )
             return
 
@@ -2010,51 +2015,7 @@ class MesScanApprovalEditRequest(models.Model):
             )
             return
 
-        line = self.line_id.sudo()
-        wo = self.workorder_id.sudo()
-        production = wo.production_id.sudo()
-
-        operator_name = (
-            self.requested_by.sudo().name
-            if self.requested_by
-            else "-"
-        )
-
-        leader_name = (
-            self.leader_id.sudo().name
-            if self.leader_id
-            else "-"
-        )
-
-        payload = {
-            "request_id": self.id,
-
-            "operator_name": operator_name,
-
-            "leader_name": leader_name,
-
-            "workorder_name": (
-                wo.name
-                if wo
-                else "-"
-            ),
-
-            "production_name": (
-                production.name
-                if production
-                else "-"
-            ),
-
-            "product_name": (
-                wo.product_id.sudo().display_name
-                if wo and wo.product_id
-                else "-"
-            ),
-
-            "current_qty": line.qty_actual,
-
-            "state": self.state,
-        }
+        payload = rec._notification_payload()
 
         # Odoo Bus realtime notification
         self.env["bus.bus"]._sendone(
@@ -2069,12 +2030,53 @@ class MesScanApprovalEditRequest(models.Model):
             leader_user.name,
             leader_user.id,
             leader_user.partner_id.id,
-            self.id,
+            rec.id,
         )
 
     # =========================================================
     # APPROVE
     # =========================================================
+
+    def _check_leader_user(self):
+        self.ensure_one()
+        leader_user = self._get_leader_user()
+        if not leader_user:
+            raise UserError(
+                "Leader Work Order ini belum memiliki user Odoo."
+            )
+        if self.env.user.id != leader_user.id:
+            raise UserError(
+                "Anda bukan Leader dari Work Order ini. "
+                "Hanya Leader yang dapat memproses request edit."
+            )
+        return leader_user
+
+    def _memo_context(self):
+        rec = self.sudo()
+        workorder = rec.workorder_id
+        production = workorder.production_id
+        request_dt = rec.approved_date or rec.create_date or fields.Datetime.now()
+        tz_record = rec.with_context(tz=self.env.user.tz or "Asia/Jakarta")
+        local_dt = fields.Datetime.context_timestamp(tz_record, request_dt)
+        return {
+            "operator_name": rec.requested_by.name or "-",
+            "leader_name": rec.approved_by.name or rec.leader_id.name or "-",
+            "workorder_name": workorder.name or "-",
+            "production_name": production.name or "-",
+            "product_name": workorder.product_id.display_name or "-",
+            "current_qty": rec.current_qty or 0,
+            "new_qty": rec.new_qty or 0,
+            "date_str": local_dt.strftime("%d/%m/%Y %H:%M"),
+            "note": rec.note or "-",
+        }
+
+    def _get_admin_users(self):
+        admin_group = self.env.ref("base.group_system", raise_if_not_found=False)
+        if not admin_group:
+            return self.env["res.users"]
+        return admin_group.sudo().users.filtered(
+            lambda user: user.active and user.partner_id
+        )
 
     def action_approve(self):
         self.ensure_one()
@@ -2084,31 +2086,16 @@ class MesScanApprovalEditRequest(models.Model):
                 "Request ini sudah diproses sebelumnya."
             )
 
-        leader_user = self._get_leader_user()
+        self._check_leader_user()
 
-        if not leader_user:
-            raise UserError(
-                "Leader Work Order ini belum memiliki user Odoo."
-            )
+        rec = self.sudo()
+        ctx = rec._memo_context()
+        leader_name = self.env.user.name or ctx["leader_name"]
+        operator_name = ctx["operator_name"]
+        wo_name = ctx["workorder_name"]
+        mo_name = ctx["production_name"]
 
-        if self.env.user != leader_user:
-            raise UserError(
-                "Anda bukan Leader dari Work Order ini. "
-                "Hanya Leader yang dapat menyetujui request edit."
-            )
-
-        wo = self.workorder_id.sudo()
-        production = wo.production_id.sudo() if wo else None
-        operator_name = self.requested_by.sudo().name if self.requested_by else "-"
-        leader_name = self.env.user.name or "-"
-        wo_name = wo.name if wo else "-"
-        mo_name = production.name if production else "-"
-
-        # =====================================================
-        # APPROVE REQUEST + TULIS CATATAN KE FIELD NOTE
-        # =====================================================
-
-        self.write({
+        rec.write({
             "state": "approved",
             "approved_by": self.env.user.id,
             "approved_date": fields.Datetime.now(),
@@ -2121,194 +2108,32 @@ class MesScanApprovalEditRequest(models.Model):
             ),
         })
 
-        # =====================================================
-        # NOTIFIKASI KE OPERATOR
-        # =====================================================
-
-        self._send_operator_result_notification("approved")
-
+        rec._send_operator_result_notification("approved")
+        rec._notify_administrators_memo()
         return True
 
-        # =========================================================
-        # CONFIM MEMO IT
-        # =========================================================
+    def action_confirm_it_memo(self):
+        """Konfirmasi Leader untuk mengirim pengajuan memo ke admin."""
+        self.ensure_one()
+        self._check_leader_user()
+        rec = self.sudo()
+        if rec.state != "approved":
+            raise UserError("Request edit harus disetujui terlebih dahulu.")
+        if not rec.memo_notified:
+            rec._notify_administrators_memo()
+        return True
 
-        def action_confirm_it_memo(self):
-            """Konfirmasi Leader untuk mengirim pengajuan memo ke admin."""
-            self.ensure_one()
-
-            leader_user = self._get_leader_user()
-            if self.env.user != leader_user:
-                raise UserError("Hanya Leader Work Order yang dapat mengonfirmasi Memo IT.")
-            if self.state != "approved":
-                raise UserError("Request edit harus disetujui terlebih dahulu.")
-
-            if not self.memo_notified:
-                self._send_admin_memo_notification()
-                self.write({"memo_notified": True})
+    def action_create_it_note(self):
+        """Membuat Memo/Notes untuk Tim IT setelah Leader menyetujui."""
+        self.ensure_one()
+        rec = self.sudo()
+        if rec.state != "approved":
+            raise UserError(
+                "Request edit belum disetujui oleh Leader."
+            )
+        if rec.memo_notified:
             return True
-
-    # =========================================================
-    # CREATE NOTES MEMO
-    # =========================================================
-    
-        def action_create_it_note(self):
-            """Membuat Memo/Notes untuk Tim IT setelah admin mengonfirmasi."""
-
-            self.ensure_one()
-
-            if self.state != "approved":
-                raise UserError(
-                    "Request edit belum disetujui oleh Leader."
-                )
-
-            workorder = self.workorder_id.sudo()
-            production = (
-                workorder.production_id.sudo()
-                if workorder
-                else False
-            )
-
-            operator_name = (
-                self.requested_by.sudo().name
-                if self.requested_by
-                else "-"
-            )
-
-            leader_name = (
-                self.approved_by.sudo().name
-                if self.approved_by
-                else "-"
-            )
-
-            workorder_name = (
-                workorder.name
-                if workorder
-                else "-"
-            )
-
-            production_name = (
-                production.name
-                if production
-                else "-"
-            )
-
-            product_name = (
-                workorder.product_id.sudo().display_name
-                if workorder and workorder.product_id
-                else "-"
-            )
-
-            current_qty = self.current_qty or 0
-            new_qty = self.new_qty or 0
-
-            note_title = (
-                f"Memo Perubahan Data - "
-                f"{production_name} - {workorder_name}"
-            )
-
-            note_body = f"""
-            <h2>Pengajuan Perubahan Data Produksi</h2>
-
-            <p>
-                Terdapat pengajuan perubahan data produksi
-                yang telah disetujui oleh Leader.
-            </p>
-
-            <table style="border-collapse: collapse; width: 100%;">
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Operator
-                    </td>
-                    <td style="padding: 6px;">
-                        {operator_name}
-                    </td>
-                </tr>
-
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Leader
-                    </td>
-                    <td style="padding: 6px;">
-                        {leader_name}
-                    </td>
-                </tr>
-
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Manufacturing Order
-                    </td>
-                    <td style="padding: 6px;">
-                        {production_name}
-                    </td>
-                </tr>
-
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Work Order
-                    </td>
-                    <td style="padding: 6px;">
-                        {workorder_name}
-                    </td>
-                </tr>
-
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Product
-                    </td>
-                    <td style="padding: 6px;">
-                        {product_name}
-                    </td>
-                </tr>
-
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Quantity Saat Ini
-                    </td>
-                    <td style="padding: 6px;">
-                        {current_qty}
-                    </td>
-                </tr>
-
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Quantity Perubahan
-                    </td>
-                    <td style="padding: 6px;">
-                        {new_qty}
-                    </td>
-                </tr>
-            </table>
-
-            <br/>
-
-            <p>
-                <strong>Status:</strong>
-                Disetujui oleh Leader dan dikirim ke Tim IT.
-            </p>
-
-            <p>
-                <strong>Catatan Request:</strong><br/>
-                {self.note or "-"}
-            </p>
-            """
-
-            note = self.env["note.note"].sudo().create({
-                "name": note_title,
-                "memo": note_body,
-            })
-
-            _logger.info(
-                "MES EDIT REQUEST: Notes dibuat untuk Tim IT "
-                "request_id=%s, note_id=%s",
-                self.id,
-                note.id,
-            )
-
-            return {
-                "note_id": note.id,
-                "note_name": note.name,
-            }
+        return rec._notify_administrators_memo()
 
     # =========================================================
     # REJECT
@@ -2330,34 +2155,15 @@ class MesScanApprovalEditRequest(models.Model):
         # 2. VALIDASI LEADER
         # -----------------------------------------------------
 
-        leader_user = self._get_leader_user()
+        self._check_leader_user()
 
-        if not leader_user:
-            raise UserError(
-                "Leader Work Order ini belum memiliki user Odoo."
-            )
-
-        if self.env.user != leader_user:
-            raise UserError(
-                "Anda bukan Leader dari Work Order ini. "
-                "Hanya Leader yang dapat menolak request edit."
-            )
-
-        # -----------------------------------------------------
-        # 3. SIMPAN REJECT
-        # -----------------------------------------------------
-
-        self.write({
+        self.sudo().write({
             "state": "rejected",
             "approved_by": self.env.user.id,
             "approved_date": fields.Datetime.now(),
         })
 
-        # -----------------------------------------------------
-        # 4. NOTIFIKASI OPERATOR
-        # -----------------------------------------------------
-
-        self._send_operator_result_notification(
+        self.sudo()._send_operator_result_notification(
             "rejected"
         )
 
@@ -2370,30 +2176,23 @@ class MesScanApprovalEditRequest(models.Model):
     def _send_operator_result_notification(self, result):
         """
         Kirim hasil approval/rejection kembali ke operator.
-
-        Ini optional untuk tahap sekarang, tapi gue pasang
-        sekalian supaya operator tahu request-nya sudah diproses.
         """
 
         self.ensure_one()
+        rec = self.sudo()
 
-        approval = self.line_id.sudo().approval_id.sudo()
+        approval = rec.line_id.approval_id
 
         if not approval or not approval.employee_id:
             return
 
-        # Akses employee harus sudo: tanpa itu Odoo dapat memakai model
-        # hr.employee.public yang tidak mengenal field custom barcode_id.
-        operator_employee = approval.employee_id.sudo()
-        operator_user = operator_employee.user_id.sudo()
+        operator_user = approval.employee_id.user_id
 
         if not operator_user or not operator_user.partner_id:
             return
 
-        # Work Order tidak dapat dibaca oleh semua akun Leader. Karena hanya
-        # dipakai sebagai isi pesan, gunakan akses internal untuk relasinya.
-        workorder_name = self.workorder_id.sudo().name or "-"
-        approver_name = self.approved_by.sudo().name or "-"
+        workorder_name = rec.workorder_id.name or "-"
+        approver_name = rec.approved_by.name or "-"
 
         if result == "approved":
             title = "✅ Edit Disetujui"
@@ -2408,11 +2207,11 @@ class MesScanApprovalEditRequest(models.Model):
                 f"ditolak oleh {approver_name}."
             )
 
-        self.env["bus.bus"]._sendone(
+        rec.env["bus.bus"]._sendone(
             operator_user.partner_id,
             "mes_edit_request_result",
             {
-                "request_id": self.id,
+                "request_id": rec.id,
                 "title": title,
                 "message": message,
                 "state": result,
@@ -2506,47 +2305,137 @@ class MesScanApprovalEditRequest(models.Model):
             self.id,
         )
 
-    def _send_admin_memo_notification(self):
-        """Kirim pengingat memo ke seluruh user administrator aktif."""
-
+    def _notify_administrators_memo(self):
+        """Kirim notes + popup ke administrator setelah Leader setuju."""
         self.ensure_one()
-
-        admin_group = self.env.ref("base.group_system", raise_if_not_found=False)
-        admin_users = admin_group.sudo().users.filtered(
-            lambda user: user.active and user.partner_id
-        ) if admin_group else self.env["res.users"]
+        rec = self.sudo()
+        ctx = rec._memo_context()
+        admin_users = rec._get_admin_users()
 
         if not admin_users:
             _logger.warning(
                 "MES EDIT REQUEST: Tidak ada user admin aktif untuk request_id=%s",
-                self.id,
+                rec.id,
             )
-            return
+            return False
 
-        workorder = self.workorder_id.sudo()
-        production_name = workorder.production_id.sudo().name or "-"
-        workorder_name = workorder.name or "-"
+        message = (
+            f"MO {ctx['production_name']}, atas nama {ctx['operator_name']}, "
+            f"tanggal {ctx['date_str']}, Leader {ctx['leader_name']} "
+            "akan membuat memo terkait perubahan data output "
+            "yang sudah diinput oleh operator."
+        )
+        note_title = (
+            f"Memo Perubahan Data - {ctx['production_name']} - {ctx['workorder_name']}"
+        )
+        note_body = f"""
+            <h2>Pengajuan Perubahan Data Produksi</h2>
+            <p>{message}</p>
+            <table style="border-collapse: collapse; width: 100%;">
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Operator</td>
+                    <td style="padding: 6px;">{ctx['operator_name']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Leader</td>
+                    <td style="padding: 6px;">{ctx['leader_name']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Tanggal</td>
+                    <td style="padding: 6px;">{ctx['date_str']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Manufacturing Order</td>
+                    <td style="padding: 6px;">{ctx['production_name']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Work Order</td>
+                    <td style="padding: 6px;">{ctx['workorder_name']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Product</td>
+                    <td style="padding: 6px;">{ctx['product_name']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Output Saat Ini</td>
+                    <td style="padding: 6px;">{ctx['current_qty']}</td>
+                </tr>
+            </table>
+            <p><strong>Status:</strong> Disetujui oleh Leader. Menunggu memo perubahan data ke Tim IT.</p>
+        """
         payload = {
-            "request_id": self.id,
+            "request_id": rec.id,
             "title": "Pengajuan Memo Perubahan Data",
-            "message": (
-                "Ada pengajuan memo dari Produksi terkait perubahan data "
-                f"(MO: {production_name}; Work Order: {workorder_name})."
-            ),
+            "message": message,
+            "operator_name": ctx["operator_name"],
+            "leader_name": ctx["leader_name"],
+            "production_name": ctx["production_name"],
+            "workorder_name": ctx["workorder_name"],
+            "product_name": ctx["product_name"],
+            "date_str": ctx["date_str"],
+            "current_qty": ctx["current_qty"],
         }
 
         for admin_user in admin_users:
-            self.env["bus.bus"]._sendone(
+            rec.env["bus.bus"]._sendone(
                 admin_user.partner_id,
                 "mes_edit_request_admin_memo",
                 payload,
             )
 
-        _logger.info(
-            "MES EDIT REQUEST: notifikasi memo dikirim ke %s admin, request_id=%s",
-            len(admin_users),
-            self.id,
+        email_from = (
+            self.env.user.partner_id.email_formatted
+            or self.env.company.partner_id.email_formatted
+            or "noreply@localhost"
         )
+        try:
+            rec.env["mail.thread"].message_notify(
+                partner_ids=admin_users.mapped("partner_id").ids,
+                subject=note_title,
+                body=f"<p>{message}</p>",
+                model="mes.scan.approval.edit.request",
+                res_id=rec.id,
+                email_from=email_from,
+            )
+        except Exception:
+            _logger.exception(
+                "MES EDIT REQUEST: gagal kirim inbox admin, request_id=%s",
+                rec.id,
+            )
+
+        created_note = False
+        if "note.note" in rec.env:
+            Note = rec.env["note.note"]
+            created_notes = Note.browse()
+            for admin_user in admin_users:
+                stage = rec.env["note.stage"].search(
+                    [("user_id", "=", admin_user.id)],
+                    limit=1,
+                )
+                vals = {
+                    "name": note_title,
+                    "user_id": admin_user.id,
+                    "memo": note_body,
+                }
+                if stage:
+                    vals["stage_ids"] = [(6, 0, [stage.id])]
+                created_notes |= Note.create(vals)
+            created_note = created_notes[:1]
+
+        rec.write({"memo_notified": True})
+        _logger.info(
+            "MES EDIT REQUEST: notes/notifikasi admin dikirim ke %s admin, request_id=%s",
+            len(admin_users),
+            rec.id,
+        )
+        return {
+            "note_id": created_note.id if created_note else False,
+            "note_name": created_note.name if created_note else note_title,
+        }
+
+    def _send_admin_memo_notification(self):
+        """Alias lama: kirim notes dan popup ke administrator."""
+        return self._notify_administrators_memo()
 
 class MesEditRequest(models.Model):
     _name = "mes.edit.request"

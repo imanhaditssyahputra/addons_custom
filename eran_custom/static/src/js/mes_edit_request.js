@@ -14,6 +14,8 @@ const mesEditRequestService = {
         console.log("==========================================");
         console.log("MES: waiting for partner-targeted bus notification");
 
+        loadPendingEditRequests(orm, notification);
+
         // =====================================================
         // LISTEN BUS NOTIFICATION
         // =====================================================
@@ -32,7 +34,7 @@ const mesEditRequestService = {
 
                     if (type === "mes_edit_request") {
                         console.log("🔥 MES EDIT REQUEST RECEIVED:", payload);
-                        showEditRequestPopup(payload, orm, notification);
+                        enqueueEditRequestPopup(payload, orm, notification);
                     }
                 }
             }
@@ -173,12 +175,52 @@ registry
 // POPUP
 // =============================================================
 
-function showEditRequestPopup(payload, orm, notification) {
+const queuedEditRequestIds = new Set();
+let editRequestPopupChain = Promise.resolve();
+
+async function loadPendingEditRequests(orm, notification) {
+    try {
+        const pending = await orm.call(
+            "mes.scan.approval.edit.request",
+            "get_pending_for_current_leader",
+            []
+        );
+        for (const payload of pending || []) {
+            enqueueEditRequestPopup(payload, orm, notification);
+        }
+    } catch (error) {
+        console.warn("MES: gagal memuat request edit yang menunggu", error);
+    }
+}
+
+function enqueueEditRequestPopup(payload, orm, notification) {
+    const requestId = payload && payload.request_id;
+    if (!requestId || queuedEditRequestIds.has(requestId)) {
+        return;
+    }
+    queuedEditRequestIds.add(requestId);
+    editRequestPopupChain = editRequestPopupChain
+        .then(() => new Promise((resolve) => {
+            showEditRequestPopup(payload, orm, notification, resolve);
+        }))
+        .finally(() => {
+            queuedEditRequestIds.delete(requestId);
+        });
+}
+
+function showEditRequestPopup(payload, orm, notification, onDone) {
 
     // Jangan tampilkan popup dua kali
     const existing = document.getElementById(
         "mes-edit-request-popup"
     );
+
+    if (existing && existing.dataset.requestId === String(payload.request_id)) {
+        if (onDone) {
+            onDone();
+        }
+        return;
+    }
 
     if (existing) {
         existing.remove();
@@ -193,6 +235,7 @@ function showEditRequestPopup(payload, orm, notification) {
 
     backdrop.id =
         "mes-edit-request-popup";
+    backdrop.dataset.requestId = payload.request_id;
 
     backdrop.style.position = "fixed";
     backdrop.style.top = "0";
@@ -500,6 +543,9 @@ function showEditRequestPopup(payload, orm, notification) {
         try {
             await orm.call("mes.scan.approval.edit.request", "action_reject", [[payload.request_id]]);
             backdrop.remove();
+            if (onDone) {
+                onDone("rejected");
+            }
         } catch (error) {
             notification.add(error.message || "Request edit gagal ditolak.", { type: "danger" });
         }
@@ -517,6 +563,9 @@ function showEditRequestPopup(payload, orm, notification) {
             approveButton.disabled = true;
             await orm.call("mes.scan.approval.edit.request", "action_approve", [[payload.request_id]]);
             backdrop.remove();
+            if (onDone) {
+                onDone("approved");
+            }
             showMemoReminderPopup(payload, orm, notification);
         } catch (error) {
             approveButton.disabled = false;
