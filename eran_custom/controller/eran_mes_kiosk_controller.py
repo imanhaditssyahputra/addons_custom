@@ -112,8 +112,8 @@ class EranAttendanceKioskController(http.Controller):
             <input
                 type="text"
                 name="barcode"
-                <input type="text" name="barcode" placeholder="Scan barcode di sini..." autofocus autocomplete="off" style="width:100%;padding:14px;border:2px solid #01666b;border-radius:8px;font-size:16px;text-align:center;margin-bottom:12px;outline:none;" />
-                autofocus
+                placeholder="Scan barcode di sini..."
+                autofocus="autofocus"
                 autocomplete="off"
                 style="
                     width: 100%;
@@ -171,12 +171,8 @@ class EranAttendanceKioskController(http.Controller):
         tz = pytz.timezone("Asia/Jakarta")
         now_local = pytz.utc.localize(now_utc).astimezone(tz)
 
-        today_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-        tomorrow_utc = today_utc + timedelta(days=1)
-
-        # =====================================================
-        # CEK APAKAH SUDAH ABSEN HARI INI
-        # =====================================================
+        Employee = request.env["hr.employee"]
+        today_utc, tomorrow_utc = Employee._eran_jakarta_day_bounds(now_utc)
 
         existing_attendance = request.env["hr.attendance"].sudo().search([
             ("employee_id", "=", employee.id),
@@ -185,38 +181,9 @@ class EranAttendanceKioskController(http.Controller):
         ], order="check_in desc", limit=1)
 
         if existing_attendance:
-            # Sudah absen — tampil info, arahkan ke MES kiosk
-            check_in_local = pytz.utc.localize(
-                existing_attendance.check_in
-            ).astimezone(tz)
-
-            body = f"""
-            <div style="font-size:48px; margin-bottom:12px;">ℹ️</div>
-            <h3 style="color:#0b72b9; margin-bottom:6px;">
-                Sudah Absen Hari Ini
-            </h3>
-            <h2 style="margin-bottom:20px; color:#333;">
-                {employee.name}
-            </h2>
-            <p style="color:#555; font-size:14px; margin-bottom:6px;">
-                Check-in tercatat pukul:
-            </p>
-            <p style="
-                font-size:22px;
-                font-weight:bold;
-                color:#01666b;
-                margin-bottom:28px;
-            ">
-                {check_in_local.strftime("%H:%M")} WIB
-            </p>
-            <p style="color:#777; font-size:13px; margin-bottom:28px;">
-                Silakan langsung menuju mesin MO Scan untuk mulai bekerja.
-            </p>
-            <a href="/attendance/kiosk" class="btn btn-secondary">
-                Kembali ke Kiosk
-            </a>
-            """
-            return self._page("Sudah Absen", body)
+            return request.redirect(
+                f"/attendance/kiosk/welcome/{employee.id}?already=1"
+            )
 
         # =====================================================
         # BELUM ABSEN — BUAT HR.ATTENDANCE BARU
@@ -261,7 +228,10 @@ class EranAttendanceKioskController(http.Controller):
     # =========================================================
 
     @http.route(
-        "/attendance/kiosk/welcome/<int:employee_id>",
+        [
+            "/attendance/kiosk/welcome/<int:employee_id>",
+            "/attendance/welcome/<int:employee_id>",
+        ],
         type="http",
         auth="user",
         website=False,
@@ -271,15 +241,14 @@ class EranAttendanceKioskController(http.Controller):
 
         employee = request.env["hr.employee"].sudo().browse(employee_id)
         if not employee.exists():
-            return request.redirect("/web#cids=1&menu_id=502&action=760")
+            return request.redirect("/attendance/kiosk?error=Data+operator+tidak+ditemukan")
 
         tz = pytz.timezone("Asia/Jakarta")
         now_utc = fields.Datetime.now()
         now_local = pytz.utc.localize(now_utc).astimezone(tz)
 
         # Ambil waktu check-in ASLI dari hr.attendance, bukan now
-        today_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-        tomorrow_utc = today_utc + timedelta(days=1)
+        today_utc, tomorrow_utc = request.env["hr.employee"]._eran_jakarta_day_bounds(now_utc)
 
         existing = request.env["hr.attendance"].sudo().search([
             ("employee_id", "=", employee.id),
@@ -357,9 +326,9 @@ class EranAttendanceKioskController(http.Controller):
             + status_html
             + "<p style='color:#777;font-size:13px;margin-bottom:24px;'>"
             "Silakan menuju mesin MO Scan untuk memulai pekerjaan.</p>"
-            "<button onclick=\"window.location.href='/web#cids=1&menu_id=502&action=760'\" "
-            "class='btn' style='background:#01666b;'>"
-            "OK &mdash; Kembali ke Kiosk</button>"
+            "<a href='/attendance/kiosk' "
+            "class='btn' style='background:#01666b;display:block;text-decoration:none;'>"
+            "OK &mdash; Kembali ke Kiosk</a>"
             "</div></body></html>"
         )
         return request.make_response(html)

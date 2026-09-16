@@ -218,6 +218,30 @@ const mesEditRequestNotificationService = {
                         );
                     }
 
+                    if (type === "mes_edit_request_admin_memo") {
+                        let closeNotification;
+                        closeNotification = notification.add(
+                            payload.message ||
+                            `MO ${payload.production_name || "-"}, atas nama ${payload.operator_name || "-"}, tanggal ${payload.date_str || "-"}, Leader ${payload.leader_name || "-"} akan membuat memo terkait perubahan data output.`,
+                            {
+                                title: payload.title || "Pengajuan Memo Perubahan Data",
+                                type: "warning",
+                                sticky: true,
+                                buttons: [
+                                    {
+                                        name: "OK",
+                                        primary: true,
+                                        onClick: () => {
+                                            if (closeNotification) {
+                                                closeNotification();
+                                            }
+                                        },
+                                    },
+                                ],
+                            }
+                        );
+                    }
+
                 }
             }
         );
@@ -234,65 +258,3 @@ registry
         "mes_edit_request_notification",
         mesEditRequestNotificationService
     );
-
-// =================================================
-// MEMO IT BARU
-// =================================================
-
-if (
-    type ===
-    "mes_it_memo_request"
-) {
-
-    console.log(
-        "MES IT MEMO REQUEST RECEIVED:",
-        payload
-    );
-
-    let closeNotification;
-
-    closeNotification = notification.add(
-        `
-        Produksi mengajukan Memo IT
-        terkait perubahan data.
-
-        MO : ${payload.production_name || "-"}
-        Work Order : ${payload.workorder_name || "-"}
-        Operator : ${payload.operator_name || "-"}
-        Perubahan Qty :
-        ${payload.current_qty ?? 0}
-        → ${payload.new_qty ?? 0}
-        `,
-        {
-            title:
-                "⚠️ PENGAJUAN MEMO IT BARU",
-
-            type:
-                "warning",
-
-            sticky:
-                true,
-
-            buttons: [
-                {
-                    name:
-                        "OK",
-
-                    primary:
-                        true,
-
-                    onClick: () => {
-
-                        console.log(
-                            "IT Memo notification closed"
-                        );
-
-                        if (closeNotification) {
-                            closeNotification();
-                        }
-                    },
-                },
-            ],
-        }
-    );
-}
