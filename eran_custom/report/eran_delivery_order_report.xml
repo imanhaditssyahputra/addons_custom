@@ -86,15 +86,17 @@
                                 <tbody style="border-bottom:1px solid;">
                                     <t t-set="no" t-value="0"/>
                                     <tr t-foreach="o.move_ids_without_package.filtered(lambda l: l.quantity_done != 0)" t-as="lines" style="font-size:14px;">
-                                          <t t-set="no" t-value="no+1"/>
                                           <t t-set="os_line" t-value="o.order_sheet_id.sheet_line_ids.filtered(lambda osl:osl.product_id.id == lines.product_id.id)"/>
                                           <t t-set="qtydone" t-value="lines.quantity_done - lines.qty_return"/>
-                                          <td style="padding:1px; border-left:1px solid; text-align:center;"><span t-esc="no"/></td>
-                                          <td style="padding:1px; border-left:1px solid;"><span t-field="lines.description_picking"/></td>
-                                          <td style="padding:1px; border-left:1px solid; text-align:right;"><span t-esc="qtydone" t-options="{&quot;widget&quot;: &quot;float&quot;, &quot;precision&quot;: 0}"/></td>
-                                          <td style="padding:1px; border-left:1px solid; text-align:center;"><span t-field="lines.product_uom"/></td>
-                                          <td style="padding:1px; border-left:1px solid; text-align:right;"><span t-field="o.order_sheet_id.no_order_sheet"/></td>
-                                          <td t-if="no==1" style="padding:1px; vertical-align:middle; text-align:center; border-left:1px solid; border-right:1px solid;" t-att-rowspan="len(o.move_ids_without_package)"><span t-field="o.note"/></td>
+                                          <t t-if="qtydone &gt; 0">
+                                            <t t-set="no" t-value="no+1"/>
+                                            <td style="padding:1px; border-left:1px solid; text-align:center; font-size:16px;"><span t-esc="no"/></td>
+                                            <td style="padding:1px; border-left:1px solid; font-size:16px;"><span t-field="lines.description_picking"/></td>
+                                            <td style="padding:1px; border-left:1px solid; text-align:right; font-size:16px;"><span t-esc="qtydone" t-options="{&quot;widget&quot;: &quot;float&quot;, &quot;precision&quot;: 0}"/></td>
+                                            <td style="padding:1px; border-left:1px solid; text-align:center; font-size:16px;"><span t-field="lines.product_uom"/></td>
+                                            <td style="padding:1px; border-left:1px solid; text-align:right; font-size:16px;"><span t-field="o.order_sheet_id.no_order_sheet"/></td>
+                                            <td t-if="no==1" style="padding:1px; vertical-align:middle; text-align:center; border-left:1px solid; border-right:1px solid; font-size:16px;" t-att-rowspan="len(o.move_ids_without_package)"><span t-field="o.note"/></td>
+                                         </t>
                                     </tr>
                                     <t t-if="len(o.move_ids_without_package) &lt; 5">
                                         <t t-set="ss" t-value="5-len(o.move_ids_without_package)"/>
