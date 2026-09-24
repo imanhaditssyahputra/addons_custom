@@ -41,3 +41,13 @@ class HrContract(models.Model):
 
         # 3. Jalankan fungsi asli bawaan Odoo dengan parameter yang sudah aman
         return super(HrContract, self)._generate_work_entries(date_start, date_end, *args, **kwargs)
+
+class HrEmployeeBase(models.AbstractModel):
+    _inherit = "hr.employee.base"
+    _description = "Basic Employee"
+    _order = 'name'
+
+    employee_type = fields.Selection(
+        selection_add=[('daily', 'Daily')],
+        ondelete={'daily': 'set default'}
+    )

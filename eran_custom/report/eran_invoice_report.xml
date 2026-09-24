@@ -99,12 +99,14 @@
                                     <!-- Kelompokkan data dan mengurutkan berdasarkan product name dan po_ref -->
                                     <t t-set="grouped_lines" t-value="{}"/>
                                     <t t-foreach="o.invoice_line_ids.filtered(lambda x: x.product_id.is_global_discount != True)" t-as="line">
-                                        <t t-set="key" t-value="(line.product_id.name, line.picking_id.po_ref)"/>
-                                        <t t-if="key not in grouped_lines">
-                                            <t t-set="grouped_lines" t-value="grouped_lines.update({key: {'lines': [], 'qty': 0, 'total': 0}}) or grouped_lines"/>
+                                        <t t-if="line.price_unit &gt; 0">
+                                            <t t-set="key" t-value="(line.product_id.name, line.picking_id.po_ref)"/>
+                                            <t t-if="key not in grouped_lines">
+                                                <t t-set="grouped_lines" t-value="grouped_lines.update({key: {'lines': [], 'qty': 0, 'total': 0}}) or grouped_lines"/>
+                                            </t>
+                                            <t t-set="_" t-value="grouped_lines[key]['lines'].append(line)"/>
+                                            <t t-set="_" t-value="grouped_lines[key].update({                                             'qty': grouped_lines[key]['qty'] + line.quantity,                                             'total': grouped_lines[key]['total'] + line.price_subtotal                                         })"/>
                                         </t>
-                                        <t t-set="_" t-value="grouped_lines[key]['lines'].append(line)"/>
-                                        <t t-set="_" t-value="grouped_lines[key].update({                                             'qty': grouped_lines[key]['qty'] + line.quantity,                                             'total': grouped_lines[key]['total'] + line.price_subtotal                                         })"/>
                                     </t>
                                     
                                     <!-- Menampilkan hasil yang sudah dikelompokkan dan diurutkan -->
