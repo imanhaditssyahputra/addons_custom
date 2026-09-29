@@ -128,20 +128,4 @@
               sequence="30"
               groups="mrp.group_mrp_user"/>
 
-    <!-- Menu shortcut ke Attendance Kiosk custom -->
-    
-
-    <record id="action_attendance_kiosk_custom" model="ir.actions.act_url">
-        <field name="name">Attendance Kiosk</field>
-        <field name="url">/attendance/kiosk</field>
-        <field name="target">self</field>
-    </record>
-
-    <menuitem id="menu_attendance_kiosk_custom"
-            name="Attendance Kiosk"
-            parent="mrp.menu_mrp_manufacturing"
-            action="action_attendance_kiosk_custom"
-            sequence="25"
-            groups="mrp.group_mrp_user"/>
-
 </odoo>

@@ -1,4 +1,7 @@
-from zk import ZK
+try:
+    from zk import ZK
+except ImportError:
+    ZK = None
 import logging
 from odoo import api, fields, models, tools, _
 from odoo.exceptions import ValidationError, UserError
@@ -23,6 +26,8 @@ class EranAttendanceMachineConfig(models.Model):
 
     def action_test_connection(self):
         """ Fungsi untuk cek koneksi ke mesin X902 """
+        if ZK is None:
+            raise UserError(_("Library pyzk (zk) belum terinstall. Install dengan: pip install pyzk"))
         for record in self:
             if not record.ip_address:
                 raise UserError(_("Mohon isi IP Address terlebih dahulu!"))
@@ -63,6 +68,8 @@ class EranAttendanceMachineConfig(models.Model):
         user_tz = pytz.timezone(self.env.user.tz or 'Asia/Jakarta')
         utc_tz = pytz.utc
         """ Fungsi untuk mendownload data log dari mesin X902 dan simpan ke model log transaksi """
+        if ZK is None:
+            raise UserError(_("Library pyzk (zk) belum terinstall. Install dengan: pip install pyzk"))
         for record in self:
             if record.connection_status != 'online':
                 raise UserError(_("Mesin tidak dalam status online. Mohon tes koneksi terlebih dahulu!"))

@@ -170,6 +170,9 @@
         <field name="priority" eval="10"/>
         <field name="inherit_id" ref="mrp.mrp_production_workorder_tree_editable_view"/>
         <field name="arch" type="xml">
+            <xpath expr="//tree" position="attributes">
+                <attribute name="create">0</attribute>
+            </xpath>
             <!-- Tambahkan field di tree view -->
             <xpath expr="//tree" position="inside">
                 <field name="workcenter_group_id"/>
