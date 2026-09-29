@@ -15,6 +15,11 @@
                     optional="show" 
                     attrs="{'invisible': [['payment_state', 'in', ('paid', 'in_payment', 'reversed')]]}"/>
             </xpath>
+            <xpath expr="//field[@name='invoice_date_due']" position="after">
+                <field name="invoice_payment_term_id" 
+                    optional="show" 
+                    invisible="context.get('default_move_type') not in ('in_invoice', 'in_refund','in_receipt')"/>
+            </xpath>
         </field>
     </record>
     
