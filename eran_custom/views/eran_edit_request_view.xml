@@ -45,7 +45,8 @@
                         <field name="requested_by"/>
                         <field name="workorder_id"/>
                         <field name="current_qty"/>
-                        <field name="new_qty" placeholder="Masukkan jumlah output aktual yang benar"/>
+                        <field name="new_qty" placeholder="Masukkan jumlah output aktual yang benar"
+                            attrs="{'readonly': [('state', '!=', 'waiting')]}"/>
                         <field name="note"/>
                     </group>
 

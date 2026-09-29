@@ -1,7 +1,5 @@
 /** @odoo-module **/
 
-/** @odoo-module **/
-
 import { registry } from "@web/core/registry";
 
 const mesEditRequestService = {
@@ -561,12 +559,8 @@ function showEditRequestPopup(payload, orm, notification, onDone) {
 
         try {
             approveButton.disabled = true;
-            await orm.call("mes.scan.approval.edit.request", "action_approve", [[payload.request_id]]);
             backdrop.remove();
-            if (onDone) {
-                onDone("approved");
-            }
-            showMemoReminderPopup(payload, orm, notification);
+            showQtyEditPopup(payload, orm, notification, onDone);
         } catch (error) {
             approveButton.disabled = false;
             notification.add(error.message || "Request edit gagal disetujui.", { type: "danger" });
@@ -613,6 +607,121 @@ function showEditRequestPopup(payload, orm, notification, onDone) {
 // POPUP PENGINGAT MEMO IT
 // =============================================================
 
+function showQtyEditPopup(payload, orm, notification, onDone) {
+    const backdrop = document.createElement("div");
+    backdrop.id = "mes-qty-edit-popup";
+    Object.assign(backdrop.style, {
+        position: "fixed", inset: "0", background: "rgba(0,0,0,0.55)",
+        zIndex: "99999", display: "flex", alignItems: "center", justifyContent: "center",
+    });
+
+    const popup = document.createElement("div");
+    Object.assign(popup.style, {
+        width: "440px", maxWidth: "90vw", background: "white", borderRadius: "12px",
+        boxShadow: "0 10px 40px rgba(0,0,0,0.35)", overflow: "hidden", fontFamily: "Arial, sans-serif",
+    });
+    popup.innerHTML = `
+        <div style="background:#0b72b9;color:white;padding:18px 22px;">
+            <div style="font-size:20px;font-weight:bold;">Ubah Output</div>
+            <div style="font-size:13px;margin-top:4px;opacity:0.9;">
+                Masukkan output terbaru yang benar
+            </div>
+        </div>
+        <div style="padding:22px;">
+            <div style="color:#777;font-size:12px;">Output Saat Ini</div>
+            <div style="font-size:22px;font-weight:bold;color:#0b72b9;margin-bottom:16px;">
+                ${payload.current_qty ?? 0}
+            </div>
+            <label style="display:block;color:#777;font-size:12px;margin-bottom:6px;">
+                Output Baru
+            </label>
+            <input id="mes-new-qty-input" type="number" min="0.01" step="0.01"
+                value="${payload.current_qty ?? 0}"
+                style="width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #ccc;
+                border-radius:6px;font-size:18px;font-weight:bold;"/>
+            <div id="mes-qty-over-target" style="display:none;color:#dc3545;font-size:13px;font-weight:bold;margin-top:8px;">
+                Output Melebihi Target
+            </div>
+        </div>
+    `;
+
+    const footer = document.createElement("div");
+    Object.assign(footer.style, {
+        padding: "15px 22px", borderTop: "1px solid #eee",
+        display: "flex", justifyContent: "flex-end", gap: "10px",
+    });
+
+    const cancelButton = document.createElement("button");
+    cancelButton.innerText = "Batal";
+    Object.assign(cancelButton.style, {
+        padding: "9px 18px", border: "none", borderRadius: "6px",
+        background: "#6c757d", color: "white", cursor: "pointer",
+    });
+    cancelButton.onclick = () => {
+        backdrop.remove();
+        showEditRequestPopup(payload, orm, notification, onDone);
+    };
+
+    const okButton = document.createElement("button");
+    okButton.innerText = "OK";
+    Object.assign(okButton.style, {
+        padding: "9px 22px", border: "none", borderRadius: "6px",
+        background: "#28a745", color: "white", cursor: "pointer",
+    });
+    okButton.onclick = async () => {
+        const input = popup.querySelector("#mes-new-qty-input");
+        const newQty = parseFloat(input && input.value);
+        if (!newQty || newQty <= 0) {
+            notification.add("Masukkan output terbaru yang benar.", { type: "danger" });
+            return;
+        }
+        const targetQty = parseFloat(payload.qty_target) || 0;
+        if (targetQty > 0 && newQty > targetQty) {
+            return;
+        }
+        try {
+            okButton.disabled = true;
+            await orm.call(
+                "mes.scan.approval.edit.request",
+                "action_approve",
+                [[payload.request_id]],
+                { new_qty: newQty }
+            );
+            backdrop.remove();
+            if (onDone) {
+                onDone("approved");
+            }
+            showMemoReminderPopup({ ...payload, new_qty: newQty }, orm, notification);
+        } catch (error) {
+            okButton.disabled = false;
+            notification.add(error.message || "Request edit gagal disetujui.", { type: "danger" });
+        }
+    };
+
+    footer.appendChild(cancelButton);
+    footer.appendChild(okButton);
+    popup.appendChild(footer);
+    backdrop.appendChild(popup);
+    document.body.appendChild(backdrop);
+    const qtyInput = popup.querySelector("#mes-new-qty-input");
+    const overMsg = popup.querySelector("#mes-qty-over-target");
+    const targetQty = parseFloat(payload.qty_target) || 0;
+    const refreshOverTarget = () => {
+        const newQty = parseFloat(qtyInput && qtyInput.value) || 0;
+        const over = targetQty > 0 && newQty > targetQty;
+        if (overMsg) overMsg.style.display = over ? "block" : "none";
+        okButton.disabled = over;
+        okButton.style.opacity = over ? "0.45" : "1";
+        okButton.style.cursor = over ? "not-allowed" : "pointer";
+    };
+    if (qtyInput) {
+        qtyInput.addEventListener("input", refreshOverTarget);
+        qtyInput.focus();
+        qtyInput.select();
+        refreshOverTarget();
+    }
+}
+
 function showMemoReminderPopup(payload, orm, notification) {
     const backdrop = document.createElement("div");
     backdrop.id = "mes-memo-reminder-popup";
@@ -631,6 +740,7 @@ function showMemoReminderPopup(payload, orm, notification) {
             Request Edit Disetujui
         </div>
         <div style="padding:28px 22px;font-size:16px;line-height:1.5">
+            Output sudah diubah menjadi <b>${payload.new_qty ?? "-"}</b>.<br/><br/>
             Segera Buat Memo ke Tim IT Untuk Perubahan Data.
         </div>`;
 
