@@ -76,6 +76,12 @@ class MesScanApproval(models.Model):
 
     scan_time = fields.Datetime()
 
+    scanned_production_id = fields.Many2one(
+        "mrp.production",
+        string="Scanned MO",
+        help="QR MO Scan: tampilkan hanya MO ini. Kosong = ID MO Scan (semua MO hari ini).",
+    )
+
     # =========================
     # MES
     # =========================
@@ -239,6 +245,7 @@ class MesScanApproval(models.Model):
         "line_ids.edit_request_ids",
         "line_ids.edit_request_ids.state",
         "line_ids.has_pending_edit",
+        "scanned_production_id",
     )
     def _compute_workorder_info(self):
         for rec in self:
@@ -248,7 +255,7 @@ class MesScanApproval(models.Model):
 
             rec_sudo = rec.sudo()
             lines = rec_sudo.line_ids.sorted("sequence")
-            filter_mo = rec.env.context.get("mes_filter_production_id")
+            filter_mo = rec.env.context.get("mes_filter_production_id") or rec.scanned_production_id.id
             if filter_mo:
                 lines = lines.filtered(
                     lambda l: l.workorder_id.production_id.id == filter_mo
@@ -256,7 +263,7 @@ class MesScanApproval(models.Model):
             if not lines:
                 rec.workorder_info = (
                     "<p style='color:#999;'>Tidak ada Work Order untuk MO ini.</p>"
-                    if rec.env.context.get("mes_filter_production_id")
+                    if rec.env.context.get("mes_filter_production_id") or rec.scanned_production_id
                     else "<p style='color:#999;'>Tidak ada Work Order untuk hari ini.</p>"
                 )
                 continue
@@ -560,19 +567,26 @@ class MesScanApprovalLine(models.Model):
             if create_backorder is None:
                 create_backorder = False
 
-            self._finish_production(
+            backorders = self._finish_production(
                 produced_qty,
                 create_backorder,
                 ng_qty=ng_qty or 0.0,
             )
 
-            latest_time = wo.time_ids.sorted("id", reverse=True)[:1]
-            if latest_time:
-                self._apply_manual_productivity_period(
-                    latest_time,
+            if loss_id:
+                self._record_problem_period(
+                    loss_id,
                     start_hour, start_minute, end_hour, end_minute,
                     note=note,
                 )
+            elif start_hour not in (None, ""):
+                latest_time = wo.time_ids.sorted("id", reverse=True)[:1]
+                if latest_time:
+                    self._apply_manual_productivity_period(
+                        latest_time,
+                        start_hour, start_minute, end_hour, end_minute,
+                        note=note,
+                    )
 
             self.write({
                 "stop_time": now,
@@ -580,45 +594,48 @@ class MesScanApprovalLine(models.Model):
                 "qty_actual": self.qty_actual + produced_qty,
                 "state": "done",
             })
+            return backorders
 
         else:
-    # reason == "stop"
             if not loss_id:
                 raise UserError("Alasan stop harus dipilih.")
-
-            open_times = wo.time_ids.filtered(lambda t: not t.date_end)
-
-            _logger.warning("MES DEBUG STOP - open_times ditemukan: %s", open_times.ids)
-
-            if open_times:
-                latest_open = open_times.sorted("id", reverse=True)[0]
-                self._fill_productivity_end(latest_open, now)
-                _logger.debug(
-                    "MES STOP - productive time ditutup time_id=%s date_end=%s",
-                    latest_open.id, now
-                )
+            if start_hour in (None, "") or start_minute in (None, "") or end_hour in (None, "") or end_minute in (None, ""):
+                open_times = wo.time_ids.filtered(lambda t: not t.date_end)
+                if open_times:
+                    latest_open = open_times.sorted("id", reverse=True)[0]
+                    self._fill_productivity_end(latest_open, now)
+                problem = self._create_problem_productivity(loss_id, now)
+                if note:
+                    problem.sudo().write({"description": note})
+                self.env["mes.scan.approval.line.downtime"].sudo().create({
+                    "line_id": self.id,
+                    "loss_id": loss_id,
+                    "note": note,
+                    "start_time": now,
+                })
+                self.write({
+                    "stop_time": now,
+                    "duration": self.duration + duration,
+                    "state": "ready",
+                })
             else:
-                _logger.debug("MES STOP - tidak ada open productive time")
-
-            problem = self._create_problem_productivity(loss_id, now)
-            self._apply_manual_productivity_period(
-                problem,
-                start_hour, start_minute, end_hour, end_minute,
-                note=note,
-            )
-
-            self.env["mes.scan.approval.line.downtime"].sudo().create({
-                "line_id": self.id,
-                "loss_id": loss_id,
-                "note": note,
-                "start_time": now,
-            })
-
-            self.write({
-                "stop_time": now,
-                "duration": self.duration + duration,
-                "state": "ready",
-            })
+                start_dt, end_dt = self._record_problem_period(
+                    loss_id,
+                    start_hour, start_minute, end_hour, end_minute,
+                    note=note,
+                )
+                self.env["mes.scan.approval.line.downtime"].sudo().create({
+                    "line_id": self.id,
+                    "loss_id": loss_id,
+                    "note": note,
+                    "start_time": start_dt,
+                    "end_time": end_dt,
+                })
+                self.write({
+                    "stop_time": start_dt,
+                    "duration": self.duration + duration,
+                    "state": "ready",
+                })
 
     def _finish_production(self, produced_qty, create_backorder, ng_qty=0.0):
         self.ensure_one()
@@ -626,9 +643,27 @@ class MesScanApprovalLine(models.Model):
         wo = self.workorder_id.sudo()
         production = wo.production_id.sudo()
         now = fields.Datetime.now()
+        good_qty = produced_qty or 0.0
         ng_qty = ng_qty or 0.0
 
-        wo.write({"qty_producing": produced_qty})
+        if ng_qty > 0:
+            self.env["eran.ng.mrp.production"].sudo().create({
+                "production_id": production.id,
+                "workcenter_id": wo.workcenter_id.id,
+                "quantity": ng_qty,
+            })
+            if hasattr(wo, "_get_ng_ids"):
+                wo._get_ng_ids()
+
+        production.invalidate_recordset(["ng_ids", "ng_total", "good_total", "qty_producing"])
+        ng_total = sum(production.ng_ids.mapped("quantity"))
+        new_good = (production.good_total or 0.0) + good_qty
+        production.with_context(skip_good_total_check=True).write({
+            "good_total": new_good,
+            "qty_producing": new_good + ng_total,
+        })
+
+        wo.write({"qty_producing": good_qty})
 
         open_time = wo.time_ids.filtered(lambda t: not t.date_end)
         if open_time:
@@ -640,26 +675,12 @@ class MesScanApprovalLine(models.Model):
         if wo.state != "done":
             wo.with_context(skip_good_total_check=True).button_finish()
 
-        if ng_qty > 0:
-            self.env["eran.ng.mrp.production"].sudo().create({
-                "production_id": production.id,
-                "workcenter_id": wo.workcenter_id.id,
-                "quantity": ng_qty,
-            })
-
-        new_good = (production.good_total or 0.0) + produced_qty
-        ng_total = sum(production.ng_ids.mapped("quantity"))
-        production.write({
-            "good_total": new_good,
-            "qty_producing": new_good + ng_total,
-        })
-
         remaining_wo = production.workorder_ids.filtered(
             lambda w: w.id != wo.id and w.state not in ("done", "cancel")
         )
 
         if remaining_wo:
-            return
+            return self.env["mrp.production"]
 
         result = production.with_context(skip_good_total_check=True).button_mark_done()
 
@@ -669,9 +690,18 @@ class MesScanApprovalLine(models.Model):
             ).create({})
 
             if create_backorder:
+                existing = production.procurement_group_id.mrp_production_ids
                 wizard.action_backorder()
-            else:
-                wizard.action_close_mo()
+                production.invalidate_recordset()
+                new_mos = production.procurement_group_id.mrp_production_ids - existing
+                new_mos = new_mos.filtered(lambda p: p.id != production.id)
+                if not new_mos:
+                    new_mos = production.procurement_group_id.mrp_production_ids.filtered(
+                        lambda p: p.id != production.id
+                    )
+                return new_mos
+            wizard.action_close_mo()
+        return self.env["mrp.production"]
 
     def _is_last_active_workorder(self):
         self.ensure_one()
@@ -691,6 +721,27 @@ class MesScanApprovalLine(models.Model):
         if target <= 0:
             return False
         return (self.qty_actual or 0.0) + produced_qty > target
+
+    def _record_problem_period(self, loss_id, start_hour, start_minute, end_hour, end_minute, note=None):
+        if start_hour in (None, "") or start_minute in (None, "") or end_hour in (None, "") or end_minute in (None, ""):
+            raise UserError("Isi jam dari dan sampai untuk problem.")
+        wo = self.workorder_id.sudo()
+        start_dt, start_day, _ = self._dt_from_jakarta_hm(start_hour, start_minute)
+        end_dt, _, _ = self._dt_from_jakarta_hm(end_hour, end_minute, start_day)
+        if end_dt <= start_dt:
+            end_dt, _, _ = self._dt_from_jakarta_hm(
+                end_hour, end_minute, start_day + timedelta(days=1)
+            )
+        open_times = wo.time_ids.filtered(lambda t: not t.date_end)
+        if open_times:
+            self._fill_productivity_end(open_times.sorted("id", reverse=True)[0], start_dt)
+        problem = self._create_problem_productivity(loss_id, start_dt)
+        self._apply_manual_productivity_period(
+            problem,
+            start_hour, start_minute, end_hour, end_minute,
+            note=note,
+        )
+        return start_dt, end_dt
 
     def _dt_from_jakarta_hm(self, hour, minute, base_day=None):
         tz = pytz.timezone("Asia/Jakarta")
@@ -725,8 +776,13 @@ class MesScanApprovalLine(models.Model):
             "date_start": start_dt,
             "date_end": end_dt,
         }
+        if time_rec.loss_id:
+            vals["loss_id"] = time_rec.loss_id.id
         if note:
             vals["description"] = note
+        operator = self.workorder_id.sudo().operator_id or self.workorder_id.sudo().production_id.operator_id
+        if operator:
+            vals["operator_id"] = operator.id
         user = self._eran_operator_user()
         if user:
             vals["user_id"] = user.id
@@ -750,10 +806,16 @@ class MesScanApprovalLine(models.Model):
             return self.env["res.users"]
         if employee.user_id:
             return employee.user_id.sudo()
+        Users = self.env["res.users"].sudo()
+        email = (employee.work_email or employee.private_email or "").strip()
+        if email:
+            user = Users.search([("login", "=ilike", email), ("active", "=", True)], limit=1)
+            if user:
+                return user
         name = (employee.name or "").strip()
         if not name:
             return self.env["res.users"]
-        return self.env["res.users"].sudo().search([
+        return Users.search([
             ("name", "=ilike", name),
             ("active", "=", True),
         ], limit=1)
@@ -764,6 +826,9 @@ class MesScanApprovalLine(models.Model):
             "start_date": start_date,
             "start_time": start_hour,
         }
+        operator = self.workorder_id.sudo().operator_id or self.workorder_id.sudo().production_id.operator_id
+        if operator:
+            vals["operator_id"] = operator.id
         user = self._eran_operator_user()
         if user:
             vals["user_id"] = user.id
@@ -795,6 +860,9 @@ class MesScanApprovalLine(models.Model):
             "start_time": start_hour,
             "date_start": start_dt,
         }
+        operator = wo.operator_id or wo.production_id.operator_id
+        if operator:
+            vals["operator_id"] = operator.id
         user = self._eran_operator_user()
         if user:
             vals["user_id"] = user.id
@@ -945,7 +1013,7 @@ class HrEmployee(models.Model):
             return wo.production_id
         return Production.browse()
 
-    def _mes_get_or_create_approval(self, barcode, production=None):
+    def _mes_get_or_create_approval(self, barcode, production=None, require_attendance=True):
         """
         Return record mes.scan.approval untuk barcode ini,
         pakai yang sudah ada hari ini kalau ada, atau bikin baru.
@@ -959,9 +1027,11 @@ class HrEmployee(models.Model):
 
         if not employee:
             return None
-        return self._mes_build_approval(employee, production=production)
+        return self._mes_build_approval(
+            employee, production=production, require_attendance=require_attendance
+        )
 
-    def _mes_build_approval(self, employee, production=None):
+    def _mes_build_approval(self, employee, production=None, require_attendance=True):
 
         scan_time = fields.Datetime.now()
         tz = pytz.timezone("Asia/Jakarta")
@@ -974,14 +1044,14 @@ class HrEmployee(models.Model):
         # =========================================================
 
         attendance = self._eran_today_attendance(employee, scan_time)
-        if not attendance:
+        if require_attendance and not attendance:
             return {
                 "error": (
                     f"{employee.name} belum melakukan absen masuk hari ini. "
                     "Silakan scan absen di mesin absensi terlebih dahulu."
                 )
             }
-        check_in_value = attendance.check_in
+        check_in_value = attendance.check_in if attendance else scan_time
 
         # =========================================================
         # VALIDASI 2: CEK JAM SHIFT
@@ -1082,7 +1152,10 @@ class HrEmployee(models.Model):
         ], limit=1)
 
         if existing:
-            existing.write({"scan_time": scan_time})
+            existing.write({
+                "scan_time": scan_time,
+                "scanned_production_id": production.id if production else False,
+            })
 
             existing_wo_ids = existing.line_ids.mapped("workorder_id").ids
             new_workorders = workorders.filtered(lambda wo: wo.id not in existing_wo_ids)
@@ -1117,6 +1190,7 @@ class HrEmployee(models.Model):
             "shift_id": workorders[:1].shift_id.id,
             "workcenter_id": workorders[:1].workcenter_id.id,
             "state": "ready",
+            "scanned_production_id": production.id if production else False,
         })
 
         self.env["mes.scan.approval.line"].sudo().create([{
@@ -1197,7 +1271,7 @@ class HrEmployee(models.Model):
     def mes_mo_kiosk_scan(self, barcode):
         production = self._mes_find_production_by_barcode(barcode)
         if not production:
-            return {"warning": "Barcode MO tidak dikenali. Scan barcode di pojok kanan atas printout MO."}
+            return {"warning": "QR MO tidak dikenali. Scan QR di printout MO."}
 
         employee = production.operator_id
         if not employee:
@@ -1209,9 +1283,13 @@ class HrEmployee(models.Model):
             return {"warning": f"MO {production.name} belum punya operator."}
 
         if employee.barcode:
-            result = self._mes_get_or_create_approval(employee.barcode, production=production)
+            result = self._mes_get_or_create_approval(
+                employee.barcode, production=production, require_attendance=False
+            )
         else:
-            result = self._mes_build_approval(employee, production=production)
+            result = self._mes_build_approval(
+                employee, production=production, require_attendance=False
+            )
 
         if isinstance(result, dict) and "error" in result:
             return {"warning": result["error"]}
