@@ -7,6 +7,11 @@
         <field name="tag">mes_kiosk_mode</field>
     </record>
 
+    <record id="action_mes_mo_qr_kiosk_mode" model="ir.actions.client">
+        <field name="name">QR MO Scan</field>
+        <field name="tag">mes_mo_qr_kiosk_mode</field>
+    </record>
+
     <record id="action_mes_scan_approval" model="ir.actions.act_window">
         <field name="name">Riwayat MO</field>
         <field name="res_model">mes.scan.approval</field>
@@ -40,7 +45,7 @@
                 <header>
                     <!-- Tombol ini sekarang aman dipanggil karena action sudah didefinisikan di atas -->
                     <button name="%(action_mes_kiosk_mode)d"
-                            string="MO Scan"
+                            string="ID MO Scan"
                             type="action"
                             class="btn-primary"/>
 
@@ -122,10 +127,20 @@
 
     <!-- 3. MENUS -->
     <menuitem id="menu_mes_kiosk"
-              name="MO Scan"
+              name="ID MO Scan"
               parent="mrp.menu_mrp_manufacturing"
               action="action_mes_kiosk_mode"
               sequence="30"
               groups="mrp.group_mrp_user"/>
+
+    <menuitem id="menu_mes_mo_qr_kiosk"
+              name="QR MO Scan"
+              parent="mrp.menu_mrp_manufacturing"
+              action="action_mes_mo_qr_kiosk_mode"
+              sequence="31"
+              groups="mrp.group_mrp_user"/>
+
+    <delete model="ir.ui.menu" id="menu_mes_mo_barcode_kiosk"/>
+    <delete model="ir.actions.client" id="action_mes_mo_barcode_kiosk_mode"/>
 
 </odoo>

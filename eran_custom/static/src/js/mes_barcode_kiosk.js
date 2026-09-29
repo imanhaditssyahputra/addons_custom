@@ -162,24 +162,92 @@ window._mesDecodeCanvas = function(ZXing, canvas) {
     if (!ZXing || !canvas || !canvas.width) {
         return '';
     }
-    var hints = new Map();
-    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    var formats = [
         ZXing.BarcodeFormat.CODE_128,
         ZXing.BarcodeFormat.CODE_39,
-        ZXing.BarcodeFormat.QR_CODE,
         ZXing.BarcodeFormat.ITF,
+        ZXing.BarcodeFormat.CODABAR,
         ZXing.BarcodeFormat.EAN_13,
-    ]);
-    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    var reader = new ZXing.MultiFormatReader();
-    reader.setHints(hints);
-    try {
+        ZXing.BarcodeFormat.QR_CODE,
+    ];
+    var tryHints = function(pure) {
+        var hints = new Map();
+        hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
+        hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+        if (ZXing.DecodeHintType.ALSO_INVERTED !== undefined) {
+            hints.set(ZXing.DecodeHintType.ALSO_INVERTED, true);
+        }
+        if (pure && ZXing.DecodeHintType.PURE_BARCODE !== undefined) {
+            hints.set(ZXing.DecodeHintType.PURE_BARCODE, true);
+        }
+        var reader = new ZXing.MultiFormatReader();
+        reader.setHints(hints);
         var source = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
-        var bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source));
-        return reader.decode(bitmap).getText();
-    } catch (e) {
+        var sources = [source];
+        if (source.invert) {
+            try { sources.push(source.invert()); } catch (e) {}
+        }
+        var bins = [ZXing.HybridBinarizer];
+        if (ZXing.GlobalHistogramBinarizer) {
+            bins.push(ZXing.GlobalHistogramBinarizer);
+        }
+        for (var s = 0; s < sources.length; s++) {
+            for (var b = 0; b < bins.length; b++) {
+                try {
+                    reader.reset && reader.reset();
+                    var bitmap = new ZXing.BinaryBitmap(new bins[b](sources[s]));
+                    var text = reader.decode(bitmap).getText();
+                    if (text) {
+                        return text;
+                    }
+                } catch (e) {}
+            }
+        }
         return '';
+    };
+    return tryHints(false) || tryHints(true);
+};
+
+window._mesBoostCanvas = function(canvas, contrast, invert) {
+    var ctx = canvas.getContext('2d', { willReadFrequently: true });
+    var img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    var d = img.data;
+    var c = contrast || 1.7;
+    for (var i = 0; i < d.length; i += 4) {
+        var g = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+        g = (g - 128) * c + 128;
+        if (invert) {
+            g = 255 - g;
+        }
+        if (g < 0) { g = 0; } else if (g > 255) { g = 255; }
+        d[i] = d[i + 1] = d[i + 2] = g;
     }
+    ctx.putImageData(img, 0, 0);
+    return canvas;
+};
+
+window._mesGrabVideo = function(video, sx, sy, sw, sh, outW, rotDeg, flip) {
+    var scale = outW / Math.max(sw, 1);
+    var outH = Math.max(2, Math.round(sh * scale));
+    var pad = Math.round(Math.max(outW, outH) * 0.08);
+    var canvas = document.createElement('canvas');
+    canvas.width = outW + pad * 2;
+    canvas.height = outH + pad * 2;
+    var ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    if (flip) {
+        ctx.scale(-1, 1);
+    }
+    if (rotDeg) {
+        ctx.rotate(rotDeg * Math.PI / 180);
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(video, sx, sy, sw, sh, -outW / 2, -outH / 2, outW, outH);
+    ctx.restore();
+    return canvas;
 };
 
 window._mesVideoCanvases = function(video) {
@@ -189,45 +257,24 @@ window._mesVideoCanvases = function(video) {
     if (!w || !h) {
         return canvases;
     }
-    var draw = function(rotate, invert, scale) {
-        var canvas = document.createElement('canvas');
-        var ctx = canvas.getContext('2d');
-        var dw = Math.round(w * scale);
-        var dh = Math.round(h * scale);
-        if (rotate === 90 || rotate === 270) {
-            canvas.width = dh;
-            canvas.height = dw;
-        } else {
-            canvas.width = dw;
-            canvas.height = dh;
-        }
-        ctx.save();
-        if (invert) {
-            ctx.filter = 'invert(1) contrast(1.4)';
-        } else {
-            ctx.filter = 'contrast(1.3)';
-        }
-        if (rotate === 90) {
-            ctx.translate(canvas.width, 0);
-            ctx.rotate(Math.PI / 2);
-        } else if (rotate === 180) {
-            ctx.translate(canvas.width, canvas.height);
-            ctx.rotate(Math.PI);
-        } else if (rotate === 270) {
-            ctx.translate(0, canvas.height);
-            ctx.rotate(-Math.PI / 2);
-        }
-        ctx.drawImage(video, 0, 0, dw, dh);
-        ctx.restore();
-        return canvas;
-    };
-    [1].forEach(function(scale) {
-        [0, 90].forEach(function(rot) {
-            [false, true].forEach(function(inv) {
-                canvases.push(draw(rot, inv, scale));
-            });
-        });
-    });
+    var bandY = Math.round(h * 0.12);
+    var bandH = Math.round(h * 0.76);
+    var specs = [
+        { sx: 0, sy: 0, sw: w, sh: h, out: 900, rot: 0, flip: false, c: 1.6, inv: false },
+        { sx: 0, sy: 0, sw: w, sh: h, out: 900, rot: 0, flip: true, c: 1.6, inv: false },
+        { sx: 0, sy: bandY, sw: w, sh: bandH, out: 1100, rot: 0, flip: false, c: 1.9, inv: false },
+        { sx: 0, sy: bandY, sw: w, sh: bandH, out: 1100, rot: 0, flip: true, c: 1.9, inv: false },
+        { sx: 0, sy: 0, sw: w, sh: h, out: 900, rot: -12, flip: false, c: 1.7, inv: false },
+        { sx: 0, sy: 0, sw: w, sh: h, out: 900, rot: 12, flip: false, c: 1.7, inv: false },
+        { sx: 0, sy: bandY, sw: w, sh: bandH, out: 1000, rot: 0, flip: false, c: 2.1, inv: true },
+        { sx: 0, sy: 0, sw: w, sh: h, out: 800, rot: 90, flip: false, c: 1.6, inv: false },
+    ];
+    for (var i = 0; i < specs.length; i++) {
+        var s = specs[i];
+        var canvas = window._mesGrabVideo(video, s.sx, s.sy, s.sw, s.sh, s.out, s.rot, s.flip);
+        window._mesBoostCanvas(canvas, s.c, s.inv);
+        canvases.push(canvas);
+    }
     return canvases;
 };
 
