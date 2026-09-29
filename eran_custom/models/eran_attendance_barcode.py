@@ -248,9 +248,16 @@ class MesScanApproval(models.Model):
 
             rec_sudo = rec.sudo()
             lines = rec_sudo.line_ids.sorted("sequence")
+            filter_mo = rec.env.context.get("mes_filter_production_id")
+            if filter_mo:
+                lines = lines.filtered(
+                    lambda l: l.workorder_id.production_id.id == filter_mo
+                )
             if not lines:
                 rec.workorder_info = (
-                    "<p style='color:#999;'>Tidak ada Work Order untuk hari ini.</p>"
+                    "<p style='color:#999;'>Tidak ada Work Order untuk MO ini.</p>"
+                    if rec.env.context.get("mes_filter_production_id")
+                    else "<p style='color:#999;'>Tidak ada Work Order untuk hari ini.</p>"
                 )
                 continue
 
@@ -905,7 +912,40 @@ class HrEmployee(models.Model):
             ("check_in", "<", end_utc),
         ], order="check_in desc", limit=1)
 
-    def _mes_get_or_create_approval(self, barcode):
+    @api.model
+    def _mes_find_production_by_barcode(self, barcode):
+        scanned = (barcode or "").strip()
+        if not scanned:
+            return self.env["mrp.production"]
+        Production = self.env["mrp.production"].sudo()
+        Workorder = self.env["mrp.workorder"].sudo()
+
+        exact = Production.search([("name", "=", scanned)], limit=1)
+        if exact:
+            return exact
+
+        scanned_norm = "".join(scanned.split()).upper()
+        scanned_noslash = scanned_norm.replace("/", "").replace("-", "")
+        for prod in Production.search([("name", "ilike", scanned.split("/")[0])], limit=40):
+            mo_norm = "".join((prod.name or "").split()).upper()
+            mo_noslash = mo_norm.replace("/", "").replace("-", "")
+            if (
+                scanned_norm == mo_norm
+                or scanned_noslash == mo_noslash
+                or (len(scanned_norm) >= 6 and scanned_norm in mo_norm)
+                or (len(mo_norm) >= 6 and mo_norm in scanned_norm)
+            ):
+                return prod
+
+        wo = Workorder.search([("name", "=", scanned)], limit=1)
+        if wo:
+            return wo.production_id
+        wo = Workorder.search([("production_id.name", "=", scanned)], limit=1)
+        if wo:
+            return wo.production_id
+        return Production.browse()
+
+    def _mes_get_or_create_approval(self, barcode, production=None):
         """
         Return record mes.scan.approval untuk barcode ini,
         pakai yang sudah ada hari ini kalau ada, atau bikin baru.
@@ -919,6 +959,9 @@ class HrEmployee(models.Model):
 
         if not employee:
             return None
+        return self._mes_build_approval(employee, production=production)
+
+    def _mes_build_approval(self, employee, production=None):
 
         scan_time = fields.Datetime.now()
         tz = pytz.timezone("Asia/Jakarta")
@@ -1004,17 +1047,21 @@ class HrEmployee(models.Model):
         # CARI WO YANG COCOK
         # =========================================================
 
-        domain = [
-            "|",
-                ("operator_id", "=", employee.id),
-                ("production_id.operator_id", "=", employee.id),
-            ("state", "in", ["pending", "waiting", "ready", "progress", "done"]),
-            ("production_id.date_planned_start", ">=", today),
-            ("production_id.date_planned_start", "<", tomorrow),
-        ]
-
-        workorders = self.env["mrp.workorder"].sudo().search(domain)
-        _logger.debug("MES scan WO count=%s domain=%s", len(workorders), domain)
+        if production:
+            workorders = production.workorder_ids.filtered(
+                lambda wo: wo.state in ("pending", "waiting", "ready", "progress", "done")
+            )
+        else:
+            domain = [
+                "|",
+                    ("operator_id", "=", employee.id),
+                    ("production_id.operator_id", "=", employee.id),
+                ("state", "in", ["pending", "waiting", "ready", "progress", "done"]),
+                ("production_id.date_planned_start", ">=", today),
+                ("production_id.date_planned_start", "<", tomorrow),
+            ]
+            workorders = self.env["mrp.workorder"].sudo().search(domain)
+        _logger.debug("MES scan WO count=%s production=%s", len(workorders), production and production.name)
 
         STATE_MAP = {
             "pending": "ready",
@@ -1059,6 +1106,8 @@ class HrEmployee(models.Model):
         # =========================================================
 
         if not workorders:
+            if production:
+                return {"error": f"Tidak ada Work Order pada MO {production.name}."}
             return {"error": f"Tidak ada Work Order untuk {employee.name} hari ini."}
 
         approval = self.env["mes.scan.approval"].sudo().create({
@@ -1141,6 +1190,47 @@ class HrEmployee(models.Model):
                 "type": "ir.actions.act_url",
                 "url": f"/mes/greet/{result.id}",
                 "target": "self",
+            }
+        }
+
+    @api.model
+    def mes_mo_kiosk_scan(self, barcode):
+        production = self._mes_find_production_by_barcode(barcode)
+        if not production:
+            return {"warning": "Barcode MO tidak dikenali. Scan barcode di pojok kanan atas printout MO."}
+
+        employee = production.operator_id
+        if not employee:
+            wo_ops = production.workorder_ids.mapped("operator_id").filtered(lambda e: e)
+            employee = wo_ops[:1]
+        if not employee:
+            employee = self.sudo().search([("user_id", "=", self.env.uid)], limit=1)
+        if not employee:
+            return {"warning": f"MO {production.name} belum punya operator."}
+
+        if employee.barcode:
+            result = self._mes_get_or_create_approval(employee.barcode, production=production)
+        else:
+            result = self._mes_build_approval(employee, production=production)
+
+        if isinstance(result, dict) and "error" in result:
+            return {"warning": result["error"]}
+        if not result:
+            return {"warning": "Gagal membuka MO Scan."}
+
+        form_view = self.env.ref("eran_custom.view_mes_scan_approval_form")
+        return {
+            "action": {
+                "type": "ir.actions.act_window",
+                "name": production.name,
+                "res_model": "mes.scan.approval",
+                "res_id": result.id,
+                "view_mode": "form",
+                "views": [(form_view.id, "form")],
+                "target": "current",
+                "context": {
+                    "mes_filter_production_id": production.id,
+                },
             }
         }
 
