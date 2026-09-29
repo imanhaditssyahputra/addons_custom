@@ -210,7 +210,7 @@ class MesScanController(http.Controller):
             return {"success": False, "message": "Line tidak ditemukan."}
         scanned = (barcode or "").strip()
         if not scanned:
-            return {"success": False, "message": "Barcode MO belum terdeteksi."}
+            return {"success": False, "message": "QR MO belum terdeteksi."}
         mo_name = (line.workorder_id.production_id.name or "").strip()
         scanned_norm = "".join(scanned.split()).upper()
         mo_norm = "".join(mo_name.split()).upper()
@@ -223,8 +223,8 @@ class MesScanController(http.Controller):
             return {
                 "success": False,
                 "message": (
-                    f"Barcode tidak sesuai. Scan barcode MO {mo_name} "
-                    "di pojok kanan atas dokumen."
+                    f"QR tidak sesuai. Scan QR MO {mo_name} "
+                    "di printout."
                 ),
             }
         return {"success": True, "mo_name": mo_name}
@@ -274,10 +274,11 @@ class MesScanController(http.Controller):
 
             backorder_flag = bool(create_backorder)
             try:
-                line.action_stop(
+                backorders = line.action_stop(
                     "done",
                     qty=qty_value,
                     ng_qty=ng_value,
+                    loss_id=_int_or_none(loss_id),
                     create_backorder=backorder_flag,
                     note=note_text,
                     start_hour=start_h,
@@ -295,7 +296,12 @@ class MesScanController(http.Controller):
             if ng_value:
                 extra.append(f"NG: {ng_value:g} pcs")
             if backorder_flag:
-                extra.append("Backorder dibuat")
+                bo_names = ""
+                if backorders:
+                    bo_names = ", ".join(backorders.mapped("name"))
+                extra.append(
+                    f"Backorder dibuat: {bo_names}" if bo_names else "Backorder dibuat"
+                )
             suffix = f" ({', '.join(extra)})" if extra else ""
             return {
                 "success": True,

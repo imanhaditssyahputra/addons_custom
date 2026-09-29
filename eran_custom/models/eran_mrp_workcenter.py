@@ -65,6 +65,13 @@ class MrpWorkcenterProductivity(models.Model):
     
     product_id = fields.Many2one('product.product', string='Product', related='workorder_id.production_id.product_id', store=True, readonly=True)
     workcenter_group_id = fields.Many2one('eran.work.center.group', related='workcenter_id.workcenter_group_id', string="Work Center Group", readonly=True)
+    operator_id = fields.Many2one(
+        'hr.employee',
+        string='User',
+        related='workorder_id.operator_id',
+        store=True,
+        readonly=False,
+    )
     start_date = fields.Date(string='Start Date Productivity')
     end_date = fields.Date(string='End Date Productivity')
     start_time = fields.Float(string='Start Time(Hour)')

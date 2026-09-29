@@ -101,8 +101,8 @@ window.mesStop = async function(lineId) {
         return;
     }
     window._mesSetModal(
-        '<h3 style="margin:0 0 8px;">Scan Barcode MO</h3>'
-        + '<p style="color:#555;font-size:13px;margin-bottom:10px;">Arahkan kamera ke barcode MO di dokumen. '
+        '<h3 style="margin:0 0 8px;">Scan QR MO</h3>'
+        + '<p style="color:#555;font-size:13px;margin-bottom:10px;">Arahkan kamera ke QR MO di printout. '
         + 'Kalau dari layar HP sulit terbaca, ketik nomor MO di bawah.</p>'
         + '<video id="mes-mo-video" autoplay muted playsinline '
         + 'style="width:100%;height:170px;background:#111;border-radius:8px;object-fit:contain;"></video>'
@@ -122,7 +122,7 @@ window.mesStop = async function(lineId) {
         var verify = await window._mesJson('/mes/stop/' + lineId + '/verify-mo', { barcode: code });
         if (!verify.success) {
             if (statusEl) statusEl.style.color = '#dc3545';
-            if (statusEl) statusEl.innerText = verify.message || 'Barcode tidak sesuai.';
+            if (statusEl) statusEl.innerText = verify.message || 'QR MO tidak sesuai.';
             return false;
         }
         window._mesStopCamera();
@@ -163,11 +163,6 @@ window._mesDecodeCanvas = function(ZXing, canvas) {
         return '';
     }
     var formats = [
-        ZXing.BarcodeFormat.CODE_128,
-        ZXing.BarcodeFormat.CODE_39,
-        ZXing.BarcodeFormat.ITF,
-        ZXing.BarcodeFormat.CODABAR,
-        ZXing.BarcodeFormat.EAN_13,
         ZXing.BarcodeFormat.QR_CODE,
     ];
     var tryHints = function(pure) {
@@ -295,12 +290,47 @@ window._mesStartMoCamera = async function(onFound, statusEl) {
         window._mesCameraStream = stream;
         video.srcObject = stream;
         await video.play();
-        if (statusEl) statusEl.innerText = 'Mencari barcode Code 128...';
+        if (statusEl) statusEl.innerText = 'Mencari QR MO...';
     } catch (err) {
         if (statusEl) {
             statusEl.style.color = '#dc3545';
             statusEl.innerText = 'Kamera tidak bisa dibuka. Ketik nomor MO di bawah.';
         }
+        return;
+    }
+    var detector = null;
+    if (typeof window.BarcodeDetector === 'function') {
+        try {
+            detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+        } catch (e) {
+            detector = null;
+        }
+    }
+    if (detector) {
+        var busyNative = false;
+        window._mesScanTimer = setInterval(async function() {
+            if (busyNative || !video.videoWidth) {
+                return;
+            }
+            busyNative = true;
+            try {
+                var codes = await detector.detect(video);
+                if (codes && codes[0] && codes[0].rawValue) {
+                    var text = codes[0].rawValue;
+                    if (statusEl) {
+                        statusEl.style.color = '#28a745';
+                        statusEl.innerText = 'Terdeteksi: ' + text;
+                    }
+                    var ok = await onFound(text);
+                    if (ok) {
+                        window._mesStopCamera();
+                    }
+                }
+            } catch (e) {
+            } finally {
+                busyNative = false;
+            }
+        }, 150);
         return;
     }
     var ZXing;
@@ -339,10 +369,7 @@ window._mesStartMoCamera = async function(onFound, statusEl) {
 };
 
 window.mesShowStopActions = function(res) {
-    var optionsHtml = '<option value="" disabled selected>-- Pilih Alasan --</option>';
-    (res.losses || []).forEach(function(l) {
-        optionsHtml += '<option value="' + l.id + '">' + l.name + '</option>';
-    });
+    window._mesLosses = res.losses || [];
     window._mesSetModal(
         '<h3 style="margin:0 0 8px;">Aksi untuk Work Order</h3>'
         + '<p style="color:#0b72b9;font-size:22px;font-weight:bold;margin:0 0 6px;line-height:1.3;">'
@@ -359,7 +386,7 @@ window.mesShowStopActions = function(res) {
         + '<div id="mes-stopline-wrap" style="display:none;margin-top:10px;">'
         + '<select id="mes-loss-select" style="width:100%;padding:10px;border-radius:6px;'
         + 'border:1px solid #ccc;font-size:14px;box-sizing:border-box;margin-bottom:10px;">'
-        + optionsHtml + '</select>'
+        + window.mesLossOptionsHtml() + '</select>'
         + '<button data-line-id="' + res.line_id + '" id="mes-btn-stopline-ok" '
         + 'style="display:block;width:100%;padding:12px;background:#dc3545;color:white;border:none;'
         + 'border-radius:6px;font-weight:bold;font-size:14px;cursor:pointer;">OK</button>'
@@ -382,7 +409,10 @@ window.mesShowStopActions = function(res) {
     });
     document.getElementById('mes-btn-stopline-ok').addEventListener('click', function(e) {
         e.stopPropagation();
-        window.mesStopLine(parseInt(this.getAttribute('data-line-id')));
+        var sel = document.getElementById('mes-loss-select');
+        if (!sel || !sel.value) { alert('Pilih alasan stop terlebih dahulu.'); return; }
+        window._mesStopExtra = {};
+        window.mesStopSubmit(parseInt(this.getAttribute('data-line-id')), 'stop', null, sel.value, 0, false);
     });
 };
 
@@ -497,6 +527,77 @@ window.mesInputNg = function(lineId, qty, target) {
     });
 };
 
+window.mesLossOptionsHtml = function() {
+    var optionsHtml = '<option value="" disabled selected>-- Pilih Alasan --</option>';
+    (window._mesLosses || []).forEach(function(l) {
+        optionsHtml += '<option value="' + l.id + '">' + l.name + '</option>';
+    });
+    return optionsHtml;
+};
+
+window.mesAskProblemThenHours = function(opts) {
+    var title = opts.title || 'Stop Line';
+    var subtitle = opts.subtitle || '';
+    window._mesSetModal(
+        '<h3 style="margin:0 0 8px;">' + title + '</h3>'
+        + (subtitle ? '<p style="color:#777;font-size:13px;margin-bottom:10px;">' + subtitle + '</p>' : '')
+        + '<select id="mes-loss-select" style="width:100%;padding:10px;border-radius:6px;'
+        + 'border:1px solid #ccc;font-size:14px;box-sizing:border-box;margin-bottom:10px;">'
+        + window.mesLossOptionsHtml() + '</select>'
+        + '<button id="mes-problem-ok" style="display:block;width:100%;padding:12px;background:#dc3545;'
+        + 'color:white;border:none;border-radius:6px;font-weight:bold;cursor:pointer;">OK</button>'
+        + '<button id="mes-problem-back" style="display:block;width:100%;padding:10px;margin-top:8px;'
+        + 'background:#6c757d;color:white;border:none;border-radius:6px;cursor:pointer;">← Kembali</button>',
+        true
+    );
+    document.getElementById('mes-problem-ok').addEventListener('click', function(e) {
+        e.stopPropagation();
+        var sel = document.getElementById('mes-loss-select');
+        if (!sel || !sel.value) { alert('Pilih alasan stop terlebih dahulu.'); return; }
+        var lossId = sel.value;
+        var lossName = sel.options[sel.selectedIndex].text;
+        window._mesSetModal(
+            '<h3 style="margin:0 0 6px;">' + title + '</h3>'
+            + '<p style="color:#777;font-size:13px;margin-bottom:8px;">Problem: <b>' + lossName + '</b>'
+            + (subtitle ? '<br/>' + subtitle : '') + '</p>'
+            + window.mesPeriodHtml()
+            + '<button id="mes-period-ok" style="display:block;width:100%;padding:12px;background:#dc3545;'
+            + 'color:white;border:none;border-radius:6px;font-weight:bold;font-size:15px;cursor:pointer;">OK</button>'
+            + '<button id="mes-period-back" style="display:block;width:100%;padding:10px;margin-top:8px;'
+            + 'background:#6c757d;color:white;border:none;border-radius:6px;font-size:13px;cursor:pointer;">← Kembali</button>',
+            true
+        );
+        document.getElementById('mes-period-ok').addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            var period = window.mesReadPeriod();
+            if (!period) return;
+            window._mesStopExtra = period;
+            if (opts.onDone) opts.onDone(lossId, period);
+        });
+        document.getElementById('mes-period-back').addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            window.mesAskProblemThenHours(opts);
+        });
+    });
+    document.getElementById('mes-problem-back').addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (opts.onBack) opts.onBack();
+    });
+};
+
+window.mesEnsureLosses = function(lineId, thenFn) {
+    if (window._mesLosses && window._mesLosses.length) {
+        thenFn();
+        return;
+    }
+    window._mesJson('/mes/stop/' + lineId + '/losses').then(function(info) {
+        if (info && info.losses) {
+            window._mesLosses = info.losses;
+        }
+        thenFn();
+    });
+};
+
 window.mesHmOptions = function(max, selected) {
     var html = '';
     for (var i = 0; i <= max; i++) {
@@ -551,34 +652,25 @@ window.mesPeriodHtml = function() {
 };
 
 window.mesStopReasonTime = function(lineId, qty, ngQty, target) {
-    window._mesSetModal(
-        '<h3 style="margin:0 0 6px;">Stop Line</h3>'
-        + '<p style="color:#777;font-size:13px;margin-bottom:8px;">NG: <b>' + ngQty + '</b> pcs</p>'
-        + window.mesPeriodHtml()
-        + '<button id="mes-period-ok" style="display:block;width:100%;padding:12px;background:#dc3545;'
-        + 'color:white;border:none;border-radius:6px;font-weight:bold;font-size:15px;cursor:pointer;">OK</button>'
-        + '<button id="mes-period-back" style="display:block;width:100%;padding:10px;margin-top:8px;'
-        + 'background:#6c757d;color:white;border:none;border-radius:6px;font-size:13px;cursor:pointer;">← Kembali</button>',
-        true
-    );
-    document.getElementById('mes-period-ok').addEventListener('click', function(e) {
-        e.stopPropagation();
-        var period = window.mesReadPeriod();
-        if (!period) return;
-        window._mesStopExtra = period;
-        if (target > 0 && qty < target) {
-            window.mesBackorderChoice(lineId, qty, ngQty);
-        } else {
-            window.mesStopSubmit(lineId, 'done', qty, null, ngQty, false);
-        }
-    });
-    document.getElementById('mes-period-back').addEventListener('click', function(e) {
-        e.stopPropagation();
-        window.mesInputNg(lineId, qty, target);
+    window.mesEnsureLosses(lineId, function() {
+        window.mesAskProblemThenHours({
+            title: 'Stop Line',
+            subtitle: 'NG: <b>' + ngQty + '</b> pcs',
+            onDone: function(lossId) {
+                if (target > 0 && qty < target) {
+                    window.mesBackorderChoice(lineId, qty, ngQty, lossId);
+                } else {
+                    window.mesStopSubmit(lineId, 'done', qty, lossId, ngQty, false);
+                }
+            },
+            onBack: function() {
+                window.mesInputNg(lineId, qty, target);
+            },
+        });
     });
 };
 
-window.mesBackorderChoice = function(lineId, qty, ngQty) {
+window.mesBackorderChoice = function(lineId, qty, ngQty, lossId) {
     window._mesSetModal(
         '<div style="font-size:36px;margin-bottom:8px;">⚠️</div>'
         + '<h3 style="margin:0 0 8px;">Output Belum Sesuai Target</h3>'
@@ -593,18 +685,42 @@ window.mesBackorderChoice = function(lineId, qty, ngQty) {
     );
     document.getElementById('mes-bo-ya').addEventListener('click', function(e) {
         e.stopPropagation();
-        window.mesStopSubmit(lineId, 'done', qty, null, ngQty, true);
+        window.mesStopSubmit(lineId, 'done', qty, lossId, ngQty, true);
     });
     document.getElementById('mes-bo-tidak').addEventListener('click', function(e) {
         e.stopPropagation();
-        window.mesStopSubmit(lineId, 'done', qty, null, ngQty, false);
+        window.mesStopSubmit(lineId, 'done', qty, lossId, ngQty, false);
     });
 };
 
 window.mesStopLine = function(lineId) {
     var sel = document.getElementById('mes-loss-select');
     if (!sel || !sel.value) { alert('Pilih alasan stop terlebih dahulu.'); return; }
-    window.mesStopSubmit(lineId, 'stop', null, sel.value, 0, false);
+    var lossId = sel.value;
+    var lossName = sel.options[sel.selectedIndex].text;
+    window._mesSetModal(
+        '<h3 style="margin:0 0 6px;">Stop Line</h3>'
+        + '<p style="color:#777;font-size:13px;margin-bottom:8px;">Problem: <b>' + lossName + '</b></p>'
+        + window.mesPeriodHtml()
+        + '<button id="mes-period-ok" style="display:block;width:100%;padding:12px;background:#dc3545;'
+        + 'color:white;border:none;border-radius:6px;font-weight:bold;font-size:15px;cursor:pointer;">OK</button>'
+        + '<button id="mes-period-back" style="display:block;width:100%;padding:10px;margin-top:8px;'
+        + 'background:#6c757d;color:white;border:none;border-radius:6px;font-size:13px;cursor:pointer;">← Kembali</button>',
+        true
+    );
+    document.getElementById('mes-period-ok').addEventListener('click', function(e) {
+        e.stopPropagation();
+        var period = window.mesReadPeriod();
+        if (!period) return;
+        window._mesStopExtra = period;
+        window.mesStopSubmit(lineId, 'stop', null, lossId, 0, false);
+    });
+    document.getElementById('mes-period-back').addEventListener('click', function(e) {
+        e.stopPropagation();
+        window._mesJson('/mes/stop/' + lineId + '/losses').then(function(info) {
+            if (info.success) window.mesShowStopActions(info);
+        });
+    });
 };
 
 window.mesStopSubmit = function(lineId, reason, qty, lossId, ngQty, createBackorder) {
