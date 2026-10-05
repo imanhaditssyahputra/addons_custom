@@ -7,11 +7,27 @@
             <tree editable="bottom">
                 <field name="date" />
                 <field name="currency_id" invisible="1"/>
+                <field name="customer" domain="[('customer_rank', '>', 0)]"/>
                 <field name="category_group_id" />
                 <field name="target" />
                 <field name="problem" />
                 <field name="activity" />
             </tree>
+        </field>
+    </record>
+
+    <record id="eran_master_loss_opportunity_view_pivot" model="ir.ui.view">
+        <field name="name">eran.master.loss.opportunity.view.pivot</field>
+        <field name="model">master.loss.opportunity</field>
+        <field name="arch" type="xml">
+            <pivot string="Loss Opportunity Analysis" disable_linking="true">
+                <!-- Menjadikan field Customer sebagai baris (Row) utama -->
+                <field name="customer" type="row"/>
+                <!-- Menjadikan field Date sebagai kolom (Column) berdasarkan Bulan -->
+                <field name="date" interval="month" type="col"/>
+                <!-- Menjadikan field Target sebagai nilai/angka yang dijumlahkan (Measure) -->
+                <field name="target" type="measure"/>
+            </pivot>
         </field>
     </record>
 
