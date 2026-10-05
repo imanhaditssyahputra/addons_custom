@@ -126,7 +126,6 @@
            'eran_custom/static/src/js/mes_kiosk_mode.js',
            'eran_custom/static/src/js/mes_edit_request_notification.js',
            'eran_custom/static/src/js/mes_edit_request.js',
-           'eran_custom/static/src/js/eran_mes_kiosk.js',
         ],
     }
 

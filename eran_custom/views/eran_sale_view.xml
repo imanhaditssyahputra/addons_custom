@@ -38,6 +38,9 @@
                     <field name="order_sheet_count" widget="statinfo" string="Order Sheet"/>
                 </button>
             </xpath>
+            <xpath expr="//field[@name='partner_id']" position="attributes">
+                <attribute name="options">{'no_create': True}</attribute>
+            </xpath>
             <xpath expr="//notebook/page[@name='order_lines']/group/group[2]/field[@name='tax_totals']" position="before">
                 <button colspan="2" name="compute_global_discount" string="Discount" type="object" class="oe_right btn-secondary" attrs="{'invisible':['|','|', ('order_sheet_count','>', 0), ('picking_count_delivery','>',0), ('invoice_count','>',0)]}" />
             </xpath>

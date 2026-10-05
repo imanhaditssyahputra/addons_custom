@@ -203,16 +203,57 @@ class MesScanController(http.Controller):
             "losses": [{"id": l.id, "name": l.name} for l in losses],
         }
 
+    @http.route("/mes/stop/<int:line_id>/verify-mo", type="json", auth="user")
+    def mes_stop_verify_mo(self, line_id, barcode=None, **kwargs):
+        line = request.env["mes.scan.approval.line"].sudo().browse(line_id)
+        if not line.exists():
+            return {"success": False, "message": "Line tidak ditemukan."}
+        scanned = (barcode or "").strip()
+        if not scanned:
+            return {"success": False, "message": "QR MO belum terdeteksi."}
+        mo_name = (line.workorder_id.production_id.name or "").strip()
+        scanned_norm = "".join(scanned.split()).upper()
+        mo_norm = "".join(mo_name.split()).upper()
+        ok = (
+            scanned_norm == mo_norm
+            or (len(scanned_norm) >= 6 and scanned_norm in mo_norm)
+            or (len(mo_norm) >= 6 and mo_norm in scanned_norm)
+        )
+        if not ok:
+            return {
+                "success": False,
+                "message": (
+                    f"QR tidak sesuai. Scan QR MO {mo_name} "
+                    "di printout."
+                ),
+            }
+        return {"success": True, "mo_name": mo_name}
+
 
     # ===================================
     # STOP — CONFIRM (JSON)
     # ===================================
 
     @http.route("/mes/stop/<int:line_id>/confirm-json", type="json", auth="user")
-    def mes_stop_confirm_json(self, line_id, reason=None, qty=None, loss_id=None, **kwargs):
+    def mes_stop_confirm_json(self, line_id, reason=None, qty=None, loss_id=None, ng_qty=None, create_backorder=None,
+                              note=None, start_hour=None, start_minute=None, end_hour=None, end_minute=None, **kwargs):
         line = request.env["mes.scan.approval.line"].sudo().browse(line_id)
         if not line.exists():
             return {"success": False, "message": "Line tidak ditemukan."}
+
+        def _int_or_none(val):
+            if val in (None, ""):
+                return None
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return None
+
+        start_h = _int_or_none(start_hour)
+        start_m = _int_or_none(start_minute)
+        end_h = _int_or_none(end_hour)
+        end_m = _int_or_none(end_minute)
+        note_text = (note or "").strip() or None
 
         if reason == "done":
             try:
@@ -223,17 +264,48 @@ class MesScanController(http.Controller):
             if qty_value <= 0:
                 return {"success": False, "message": "Jumlah hasil produksi harus lebih dari 0."}
 
+            if line._is_output_over_target(qty_value):
+                return {"success": False, "message": "Output Melebihi Target"}
+
             try:
-                line.action_stop("done", qty=qty_value, create_backorder=False)
+                ng_value = float(ng_qty) if ng_qty not in (None, "") else 0.0
+            except (ValueError, TypeError):
+                return {"success": False, "message": "Jumlah NG tidak valid."}
+
+            backorder_flag = bool(create_backorder)
+            try:
+                backorders = line.action_stop(
+                    "done",
+                    qty=qty_value,
+                    ng_qty=ng_value,
+                    loss_id=_int_or_none(loss_id),
+                    create_backorder=backorder_flag,
+                    note=note_text,
+                    start_hour=start_h,
+                    start_minute=start_m,
+                    end_hour=end_h,
+                    end_minute=end_m,
+                )
             except Exception as e:
                 request.env.cr.rollback()
                 _logger.exception("ERROR action_stop done line_id=%s", line_id)
                 return {"success": False, "message": str(e)}
 
             wo = line.workorder_id
+            extra = []
+            if ng_value:
+                extra.append(f"NG: {ng_value:g} pcs")
+            if backorder_flag:
+                bo_names = ""
+                if backorders:
+                    bo_names = ", ".join(backorders.mapped("name"))
+                extra.append(
+                    f"Backorder dibuat: {bo_names}" if bo_names else "Backorder dibuat"
+                )
+            suffix = f" ({', '.join(extra)})" if extra else ""
             return {
                 "success": True,
-                "message": f"{wo.name} selesai. Output: {qty_value:g} pcs."
+                "message": f"{wo.name} selesai. Output: {qty_value:g} pcs.{suffix}",
             }
 
         elif reason == "stop":
@@ -246,7 +318,15 @@ class MesScanController(http.Controller):
                 return {"success": False, "message": "Alasan stop harus dipilih."}
 
             try:
-                line.action_stop("stop", loss_id=loss_id_value)
+                line.action_stop(
+                    "stop",
+                    loss_id=loss_id_value,
+                    note=note_text,
+                    start_hour=start_h,
+                    start_minute=start_m,
+                    end_hour=end_h,
+                    end_minute=end_m,
+                )
             except UserError as e:
                 return {"success": False, "message": str(e)}
             except Exception as e:
@@ -400,6 +480,13 @@ class MesScanController(http.Controller):
             return self._info_page(
                 "Gagal",
                 "Jumlah hasil produksi harus lebih dari 0.",
+                color="#dc3545",
+            )
+
+        if line._is_output_over_target(qty_value):
+            return self._info_page(
+                "Gagal",
+                "Output Melebihi Target",
                 color="#dc3545",
             )
 
@@ -571,6 +658,13 @@ class MesScanController(http.Controller):
                 color="#dc3545",
             )
 
+        if line._is_output_over_target(qty_value):
+            return self._info_page(
+                "Gagal",
+                "Output Melebihi Target",
+                color="#dc3545",
+            )
+
         # ===================================
         # VERIFIKASI KEDUA
         # ===================================
@@ -737,11 +831,11 @@ class MesScanController(http.Controller):
             if qty_value <= 0:
                 return self._info_page("Gagal", "Jumlah hasil produksi harus lebih dari 0.", color="#dc3545")
 
-            if line._is_last_active_workorder() and line._check_underproduced(qty_value):
-                return self._backorder_choice_page(line, qty_value)
+            if line._is_output_over_target(qty_value):
+                return self._info_page("Gagal", "Output Melebihi Target", color="#dc3545")
 
             try:
-                line.action_stop("done", qty=qty_value, create_backorder=False)
+                line.action_stop("done", qty=qty_value)
             except Exception as e:
                 request.env.cr.rollback()
                 _logger.exception("ERROR saat action_stop line_id=%s reason=done", line_id)
@@ -806,6 +900,9 @@ class MesScanController(http.Controller):
                 width:340px;
                 text-align:center;
             ">
+                <div id="overTargetMsg" style="display:none;color:#dc3545;font-size:11px;margin:0 0 8px;">
+                    Hasil Produksi Melebihi Target
+                </div>
                 <h3 style="margin-top:0;">Pekerjaan Telah Selesai</h3>
                 <p style="color:#777;font-size:13px;">
                     {line.workorder_id.name} — {line.workorder_id.production_id.name}
@@ -853,7 +950,7 @@ class MesScanController(http.Controller):
                         </button>
                     </div>
 
-                    <button type="submit"
+                    <button type="submit" id="qtyOkBtn"
                         style="display:block;width:100%;padding:14px;
                         background:#28a745;color:white;border:none;border-radius:6px;
                         font-weight:bold;font-size:16px;cursor:pointer;">
@@ -881,6 +978,18 @@ class MesScanController(http.Controller):
             <script>
                 var display = document.getElementById('qtyDisplay');
                 var buttons = document.querySelectorAll('.keyBtn');
+                var targetQty = {line.qty_target or 0};
+                var overMsg = document.getElementById('overTargetMsg');
+                var okBtn = document.getElementById('qtyOkBtn');
+
+                function refreshOverTarget() {{
+                    var qty = parseFloat(display.value || '0') || 0;
+                    var over = targetQty > 0 && qty > targetQty;
+                    overMsg.style.display = over ? 'block' : 'none';
+                    okBtn.disabled = over;
+                    okBtn.style.opacity = over ? '0.45' : '1';
+                    okBtn.style.cursor = over ? 'not-allowed' : 'pointer';
+                }}
 
                 buttons.forEach(function(btn) {{
                     btn.addEventListener('click', function() {{
@@ -889,17 +998,23 @@ class MesScanController(http.Controller):
                             return;
                         }}
                         display.value += val;
+                        refreshOverTarget();
                     }});
                 }});
 
                 document.getElementById('clearBtn').addEventListener('click', function() {{
                     display.value = display.value.slice(0, -1);
+                    refreshOverTarget();
                 }});
 
                 document.getElementById('qtyForm').addEventListener('submit', function(e) {{
                     if (!display.value || parseFloat(display.value) <= 0) {{
                         e.preventDefault();
                         alert('Jumlah hasil produksi harus lebih dari 0.');
+                        return;
+                    }}
+                    if (targetQty > 0 && parseFloat(display.value) > targetQty) {{
+                        e.preventDefault();
                     }}
                 }});
             </script>

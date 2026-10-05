@@ -39,89 +39,8 @@ const mesEditRequestNotificationService = {
                     // =================================================
 
                     if (type === "mes_edit_request") {
-
-                        console.log(
-                            "MES EDIT REQUEST RECEIVED:",
-                            payload
-                        );
-
-                        const operatorName =
-                            payload.operator_name || "-";
-
-                        const workorderName =
-                            payload.workorder_name || "-";
-
-                        const productionName =
-                            payload.production_name || "-";
-
-                        const productName =
-                            payload.product_name || "-";
-
-                        const currentQty =
-                            payload.current_qty ?? 0;
-
-                        const requestId =
-                            payload.request_id;
-
-                        // =============================================
-                        // TAMPILKAN POPUP / NOTIFICATION
-                        // =============================================
-
-                        notification.add(
-                            `
-                            Operator : ${operatorName}
-                            Work Order : ${workorderName}
-                            MO : ${productionName}
-                            Product : ${productName}
-                            Output Saat Ini : ${currentQty}
-                            `,
-                            {
-                                title: "⚠️ REQUEST EDIT BARU",
-
-                                type: "warning",
-
-                                sticky: true,
-
-                                buttons: [
-                                    {
-                                        name: "Buka Request",
-
-                                        primary: true,
-
-                                        onClick: () => {
-
-                                            console.log(
-                                                "Opening edit request:",
-                                                requestId
-                                            );
-
-                                            // =================================
-                                            // BUKA FORM REQUEST
-                                            // =================================
-
-                                            action.doAction({
-                                                type: "ir.actions.act_window",
-
-                                                res_model:
-                                                    "mes.scan.approval.edit.request",
-
-                                                res_id:
-                                                    requestId,
-
-                                                views: [
-                                                    [
-                                                        false,
-                                                        "form"
-                                                    ]
-                                                ],
-
-                                                target: "current",
-                                            });
-                                        },
-                                    },
-                                ],
-                            }
-                        );
+                        // Popup handled by mes_edit_request.js
+                        continue;
                     }
 
                     // =================================================
@@ -218,6 +137,30 @@ const mesEditRequestNotificationService = {
                         );
                     }
 
+                    if (type === "mes_edit_request_admin_memo") {
+                        let closeNotification;
+                        closeNotification = notification.add(
+                            payload.message ||
+                            `MO ${payload.production_name || "-"}, atas nama ${payload.operator_name || "-"}, tanggal ${payload.date_str || "-"}, Leader ${payload.leader_name || "-"} akan membuat memo terkait perubahan data output.`,
+                            {
+                                title: payload.title || "Pengajuan Memo Perubahan Data",
+                                type: "warning",
+                                sticky: true,
+                                buttons: [
+                                    {
+                                        name: "OK",
+                                        primary: true,
+                                        onClick: () => {
+                                            if (closeNotification) {
+                                                closeNotification();
+                                            }
+                                        },
+                                    },
+                                ],
+                            }
+                        );
+                    }
+
                 }
             }
         );
@@ -234,65 +177,3 @@ registry
         "mes_edit_request_notification",
         mesEditRequestNotificationService
     );
-
-// =================================================
-// MEMO IT BARU
-// =================================================
-
-if (
-    type ===
-    "mes_it_memo_request"
-) {
-
-    console.log(
-        "MES IT MEMO REQUEST RECEIVED:",
-        payload
-    );
-
-    let closeNotification;
-
-    closeNotification = notification.add(
-        `
-        Produksi mengajukan Memo IT
-        terkait perubahan data.
-
-        MO : ${payload.production_name || "-"}
-        Work Order : ${payload.workorder_name || "-"}
-        Operator : ${payload.operator_name || "-"}
-        Perubahan Qty :
-        ${payload.current_qty ?? 0}
-        → ${payload.new_qty ?? 0}
-        `,
-        {
-            title:
-                "⚠️ PENGAJUAN MEMO IT BARU",
-
-            type:
-                "warning",
-
-            sticky:
-                true,
-
-            buttons: [
-                {
-                    name:
-                        "OK",
-
-                    primary:
-                        true,
-
-                    onClick: () => {
-
-                        console.log(
-                            "IT Memo notification closed"
-                        );
-
-                        if (closeNotification) {
-                            closeNotification();
-                        }
-                    },
-                },
-            ],
-        }
-    );
-}

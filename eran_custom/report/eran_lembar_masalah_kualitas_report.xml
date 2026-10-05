@@ -298,9 +298,9 @@
             									</t>
             								</div>
             								<div class="col" style="height:51px; width:128px; border-top:1px solid; border-right:1px solid; text-align:center; justify-content:center; line-height:47px;">
-            									<t t-if="len(o.approval_line_ids) &gt; 0 and o.approval_line_ids.sorted(lambda x: x.sequence)[1].signature != False and o.approval_line_ids.sorted(lambda x: x.sequence)[1].is_approved == True">
+            									<!-- <t t-if="len(o.approval_line_ids) &gt; 0 and o.approval_line_ids.sorted(lambda x: x.sequence)[1].signature != False and o.approval_line_ids.sorted(lambda x: x.sequence)[1].is_approved == True">
             										<img t-att-src="image_data_uri(o.approval_line_ids.sorted(lambda x: x.sequence)[1].signature)" style="max-width:47px; width:100%; object-fit:contain;" alt="Signature"/>
-            									</t>
+            									</t> -->
             								</div>
             							</div>
                         	<div class="row">
@@ -327,9 +327,9 @@
               									</t>
               								</div>
               								<div class="col" style="text-align:center; width:128px; height:17px; border-top:1px solid;">
-              									<t t-if="o.approval_line_ids and o.approval_line_ids[1].is_approved == True">
+              									<!-- <t t-if="o.approval_line_ids and o.approval_line_ids[1].is_approved == True">
               										<span t-esc="diperiksa_date" t-options="{'widget': 'date','format': 'dd/MM/yyyy'}"/>
-              									</t>
+              									</t> -->
               									<!-- <span t-field="o.approve_date"/>
               									<span t-field="o.approval_line_ids.date_approved[0]"/> -->
               								</div>
@@ -349,9 +349,9 @@
             									</t>
             								</div>
             								<div class="col" style="text-align:center; width:128px; height:17px; border-top:1px solid;">
-            									<t t-if="o.approval_line_ids and o.approval_line_ids.sorted(lambda x: x.sequence)[1].is_approved == True">
+            									<!-- <t t-if="o.approval_line_ids and o.approval_line_ids.sorted(lambda x: x.sequence)[1].is_approved == True">
             										<span t-field="o.approval_line_ids.sorted(lambda x: x.sequence)[1].user_id.name"/>
-            									</t>
+            									</t> -->
             								</div>
             								<!-- <div class="col" style="text-align:center; width:128px; height:17px; border-top:1px solid;">
             									<span t-field="o.approve_uid.name"/>

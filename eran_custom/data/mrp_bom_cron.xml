@@ -58,7 +58,7 @@
 
     <record id="ir_cron_sync_machine_attendance" model="ir.cron">
         <field name="name">Machine Attendance: Sync Machine Attendance</field>
-        <field name="model_id" ref="model_eran_attendance_machine_config"/>
+        <field name="model_id" search="[('model', '=', 'eran.attendance.machine.config')]"/>
         <field name="state">code</field>
         <field name="code">model.action_download_data()</field>
         <field name="interval_number">1</field>

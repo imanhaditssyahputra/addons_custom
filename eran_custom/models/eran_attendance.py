@@ -1,7 +1,11 @@
-from zk import ZK
+try:
+    from zk import ZK
+except ImportError:
+    ZK = None
 import logging
 from odoo import api, fields, models, tools, _
 from odoo.exceptions import ValidationError, UserError
+from odoo.tools import DEFAULT_SERVER_DATETIME_FORMAT
 import pytz
 from datetime import datetime, timedelta, time
 _logger = logging.getLogger(__name__)
@@ -23,6 +27,8 @@ class EranAttendanceMachineConfig(models.Model):
 
     def action_test_connection(self):
         """ Fungsi untuk cek koneksi ke mesin X902 """
+        if ZK is None:
+            raise UserError(_("Library pyzk (zk) belum terinstall. Install dengan: pip install pyzk"))
         for record in self:
             if not record.ip_address:
                 raise UserError(_("Mohon isi IP Address terlebih dahulu!"))
@@ -63,6 +69,8 @@ class EranAttendanceMachineConfig(models.Model):
         user_tz = pytz.timezone(self.env.user.tz or 'Asia/Jakarta')
         utc_tz = pytz.utc
         """ Fungsi untuk mendownload data log dari mesin X902 dan simpan ke model log transaksi """
+        if ZK is None:
+            raise UserError(_("Library pyzk (zk) belum terinstall. Install dengan: pip install pyzk"))
         for record in self:
             if record.connection_status != 'online':
                 raise UserError(_("Mesin tidak dalam status online. Mohon tes koneksi terlebih dahulu!"))
@@ -562,60 +570,58 @@ class eranAttendanceOvertime(models.Model):
         for rec in self:
             if rec.state == 'done' and rec.attendance_overtime_line:
                 
+                # Ambil timezone dari user yang sedang login (default ke Asia/Jakarta jika tidak diatur)
+                user_tz = pytz.timezone(self.env.user.tz or 'Asia/Jakarta')
+                
                 for line in rec.attendance_overtime_line:
-                    
                     # Validasi kelengkapan data sebelum diproses
                     if not line.tanggal_pengajuan or not line.start_actual or not line.finish_actual:
                         continue
 
-                    # 1. Format string tanggal untuk kueri SQL
-                    # Menghasilkan teks: '2026-06-17 00:00:00' dan '2026-06-17 23:59:59'
-                    str_tanggal = line.tanggal_pengajuan.strftime('%Y-%m-%d')
-                    sql_mindate = f"{str_tanggal} 00:00:00.000"
-                    sql_maxdate = f"{str_tanggal} 23:59:59.000"
+                    # 1. Tentukan rentang waktu lokal (awal & akhir hari berdasarkan tanggal pengajuan)
+                    local_start = datetime.combine(line.tanggal_pengajuan, time.min) # 00:00:00
+                    local_end = datetime.combine(line.tanggal_pengajuan, time.max)   # 23:59:59
 
-                    # 2. Jalankan Kueri SQL murni seperti yang Anda coba di database
-                    query = """
-                        SELECT id 
-                        FROM hr_attendance 
-                        WHERE employee_id = %s
-                        AND check_in >= %s 
-                        AND check_in <= %s
-                        LIMIT 1;
-                    """
-                    self.env.cr.execute(query, (line.employee_id.id, sql_mindate, sql_maxdate))
-                    res = self.env.cr.fetchone()  # Mengambil hasil kueri (berupa tuple)
+                    # 2. Lokalisasikan ke timezone user, lalu konversi ke UTC untuk query database
+                    utc_start = user_tz.localize(local_start).astimezone(pytz.utc).strftime(DEFAULT_SERVER_DATETIME_FORMAT)
+                    utc_end = user_tz.localize(local_end).astimezone(pytz.utc).strftime(DEFAULT_SERVER_DATETIME_FORMAT)
 
-                    # 3. Jika ID absensi ditemukan, lakukan proses pembaruan data
-                    if res and res[0]:
-                        attendance_id = res[0]
-                        # Ambil browse record dari ID tersebut agar bisa di-write
-                        attendance_date = self.env['hr.attendance'].browse(attendance_id)
+                    # 3. Cari menggunakan ORM Odoo (Lebih aman dan otomatis mendukung lintas user/timezone)
+                    attendance_date = self.env['hr.attendance'].search([
+                        ('employee_id', '=', line.employee_id.id),
+                        ('check_in', '>=', utc_start),
+                        ('check_in', '<=', utc_end)
+                    ], limit=1)
 
-                        # Konversi jam float untuk kebutuhan write datetime di Odoo
+                    # 4. Jika record absensi ditemukan, lakukan pembaruan data
+                    if attendance_date:
+                        # Konversi jam float ke format jam dan menit
                         start_hours, start_minutes = divmod(line.start_actual * 60, 60)
                         finish_hours, finish_minutes = divmod(line.finish_actual * 60, 60)
 
-                        dt_checkin = datetime.combine(line.tanggal_pengajuan, datetime.min.time()) + timedelta(hours=int(start_hours), minutes=int(start_minutes))
-                        dt_checkout = datetime.combine(line.tanggal_pengajuan, datetime.min.time()) + timedelta(hours=int(finish_hours), minutes=int(finish_minutes))
+                        # Buat objek datetime lokal sesuai input user (WIB)
+                        local_checkin = datetime.combine(line.tanggal_pengajuan, time.min) + timedelta(hours=int(start_hours), minutes=int(start_minutes))
+                        local_checkout = datetime.combine(line.tanggal_pengajuan, time.min) + timedelta(hours=int(finish_hours), minutes=int(finish_minutes))
 
                         if line.finish_actual < line.start_actual:
-                            dt_checkout += timedelta(days=1)
+                            local_checkout += timedelta(days=1)
+
+                        dt_checkin_utc = user_tz.localize(local_checkin).astimezone(pytz.utc)
+                        dt_checkout_utc = user_tz.localize(local_checkout).astimezone(pytz.utc)
 
                         # Tulis data lembur ke record absensi yang ditemukan
                         attendance_date.write({
                             'overtime_id': rec.id,
-                            'checkin_lembur': dt_checkin,
-                            'checkout_lembur': dt_checkout,
+                            'checkin_lembur': dt_checkin_utc.strftime(DEFAULT_SERVER_DATETIME_FORMAT),
+                            'checkout_lembur': dt_checkout_utc.strftime(DEFAULT_SERVER_DATETIME_FORMAT),
                             'istirahat_lembur': line.istirahat_actual,
                             'total_lembur': line.durasi_actual
                         })
-
                     else:
-                        # Jika absensi tidak ditemukan, tandai dokumen atau field log Anda
-                        raise ValidationError(_("failed to send attendance!"))
+                        # Jika absensi tidak ditemukan, munculkan pesan eror beserta nama karyawan
+                        raise ValidationError(_("Gagal mengirim data! Absensi untuk %s pada tanggal %s tidak ditemukan.") % (line.employee_id.name, line.tanggal_pengajuan))
             else:
-                raise ValidationError(_("failed to send attendance!"))
+                raise ValidationError(_("Gagal memproses! Status lembur belum selesai ('done') atau baris lembur kosong."))
 
 class EranAttendanceOvertimeApprovalLine(models.Model):
     _name = 'eran.attendance.overtime.approval.line'

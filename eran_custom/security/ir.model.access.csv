@@ -86,5 +86,7 @@
 "access_mes_scan_approval_line_downtime_user","mes_scan_approval_line_downtime_user","model_mes_scan_approval_line_downtime","base.group_user",1,1,0,0
 "access_mes_scan_approval_edit_request_user","mes_scan_approval_edit_request_user","model_mes_scan_approval_edit_request","base.group_user",1,1,0,0
 "access_mes_scan_approval_edit_request_admin","mes_scan_approval_edit_request_admin","model_mes_scan_approval_edit_request","base.group_system",1,1,1,1
+"access_mrp_production_eran_system","mrp.production system","mrp.model_mrp_production","base.group_system",1,1,1,1
+"access_mrp_workorder_eran_system","mrp.workorder system","mrp.model_mrp_workorder","base.group_system",1,1,1,1
 
 

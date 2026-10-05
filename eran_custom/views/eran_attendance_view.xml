@@ -141,7 +141,7 @@
             <xpath expr="//field[@name='check_out']" position="after">
                 <field name="checkin_lembur"/>
                 <field name="checkout_lembur"/>
-                <field name="istirahat_lembur" />
+                <field name="istirahat_lembur"/>
             </xpath>
         </field>
     </record>
@@ -222,12 +222,12 @@
                                     <field name="employee_id"/>
                                     <field name="start_plan" widget="float_time"/>
                                     <field name="finish_plan" widget="float_time"/>
-                                    <field name="istirahat_plan" widget="float_time"/>
-                                    <field name="durasi_plan" widget="float_time"/>
+                                    <field name="istirahat_plan"/>
+                                    <field name="durasi_plan"/>
                                     <field name="start_actual" widget="float_time"/>
                                     <field name="finish_actual" widget="float_time"/>
-                                    <field name="istirahat_actual" widget="float_time"/>
-                                    <field name="durasi_actual" widget="float_time"/>
+                                    <field name="istirahat_actual"/>
+                                    <field name="durasi_actual"/>
                                 </tree>
                             </field>
                         </page>

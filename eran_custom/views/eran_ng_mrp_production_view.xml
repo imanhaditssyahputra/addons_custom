@@ -100,7 +100,8 @@
                 <field name="time_ids" nolabel="1" context="{'default_workcenter_id': workcenter_id, 'default_workorder_id': id,
                     'default_start_date': start_time, 'default_end_date': end_time}" attrs="{'readonly': [('state', 'in', ('done', 'cancel'))]}">
                     <tree editable="bottom">
-                        <field name="user_id"/>
+                        <field name="operator_id" string="User"/>
+                        <field name="user_id" invisible="1"/>
                         <field name="duration" widget="float_time" sum="Total duration"/>
                         <field name="date_start" invisible="1"/>
                         <field name="date_end" invisible="1"/>
@@ -121,7 +122,8 @@
                                 <field name="company_id" invisible="1"/>
                             </group>
                             <group>
-                                <field name="user_id"/>
+                                <field name="operator_id" string="User"/>
+                                <field name="user_id" invisible="1"/>
                                 <field name="workcenter_id"/>
                                 <field name="company_id" invisible="1"/>
                                 <field name="loss_id"/>
@@ -170,6 +172,9 @@
         <field name="priority" eval="10"/>
         <field name="inherit_id" ref="mrp.mrp_production_workorder_tree_editable_view"/>
         <field name="arch" type="xml">
+            <xpath expr="//tree" position="attributes">
+                <attribute name="create">0</attribute>
+            </xpath>
             <!-- Tambahkan field di tree view -->
             <xpath expr="//tree" position="inside">
                 <field name="workcenter_group_id"/>

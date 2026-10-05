@@ -1,12 +1,7 @@
-from pyparsing import line
-
 from odoo import models, fields, api
 import logging
-from datetime import timedelta
-from collections import Counter
+from datetime import datetime, time, timedelta
 from odoo.exceptions import UserError
-from odoo import http
-from odoo.http import request
 import pytz
 
 _logger = logging.getLogger(__name__)
@@ -15,21 +10,13 @@ class MrpWorkorder(models.Model):
     _inherit = "mrp.workorder"
  
     def name_get(self):
-        _logger.warning("=== GET WORKORDER ===")
-
         result = []
-
         for rec in self:
-
             mo = rec.production_id.name or "-"
             wo = rec.name or "-"
             product = rec.production_id.product_id.display_name or "-"
             wc = rec.workcenter_id.name or "-"
-
-            name = f"{mo} | {wo} | {product} | {wc}"
-
-            result.append((rec.id, name))
-
+            result.append((rec.id, f"{mo} | {wo} | {product} | {wc}"))
         return result
 
 class BarcodeScanLog(models.Model):
@@ -39,7 +26,7 @@ class BarcodeScanLog(models.Model):
 
     employee_id = fields.Many2one(
         "hr.employee",
-        required=True
+        required=True 
     )
 
     barcode = fields.Char(
@@ -88,6 +75,12 @@ class MesScanApproval(models.Model):
     check_in = fields.Datetime()
 
     scan_time = fields.Datetime()
+
+    scanned_production_id = fields.Many2one(
+        "mrp.production",
+        string="Scanned MO",
+        help="QR MO Scan: tampilkan hanya MO ini. Kosong = ID MO Scan (semua MO hari ini).",
+    )
 
     # =========================
     # MES
@@ -197,6 +190,43 @@ class MesScanApproval(models.Model):
         tz_record = self.with_context(tz=self.env.user.tz or "Asia/Jakarta")
         local_time = fields.Datetime.context_timestamp(tz_record, value)
         return local_time.strftime("%d/%m/%Y %H:%M")
+
+    def _wo_line_labels(self, line):
+        line = line.sudo()
+        wo = line.workorder_id.sudo()
+        return line, wo, {
+            "leader": wo.leader_id.name if wo.leader_id else "-",
+            "workcenter_name": wo.workcenter_id.name if wo.workcenter_id else "-",
+            "production_name": wo.production_id.name if wo.production_id else "-",
+            "product_name": wo.product_id.display_name if wo.product_id else "-",
+            "wo_name": wo.name or "-",
+        }
+
+    def _render_wo_card(self, rec, line, labels, idx, total, status_text, footer_html=""):
+        return f"""
+        <div style="border:1px solid #28a745;border-radius:8px;padding:12px;
+            margin-bottom:12px;background:#f4fbf6;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <h4 style="margin:0;color:#0b72b9;">
+                    📍 {labels['workcenter_name']} ({idx}/{total})
+                </h4>
+                <span style="background:#28a745;color:white;padding:2px 10px;
+                    border-radius:12px;font-size:12px;font-weight:bold;">
+                    {status_text}
+                </span>
+            </div>
+            <p><b>Leader :</b> {labels['leader']}</p>
+            <p><b>Manufacturing Order</b><br/>{labels['production_name']}</p>
+            <p><b>Work Order</b><br/>{labels['wo_name']}</p>
+            <p><b>Product</b><br/>{labels['product_name']}</p>
+            <p><b>Target</b><br/>{line.qty_target}</p>
+            <p><b>Output</b><br/>{line.qty_actual}</p>
+            <p><b>Status</b><br/>{line.state.upper()}</p>
+            {rec._render_downtime_html(line)}
+            {rec._render_productivity_period_html(line)}
+            {footer_html}
+        </div>
+        """
     
     @api.depends(
         "check_in",
@@ -212,604 +242,111 @@ class MesScanApproval(models.Model):
         "line_ids.downtime_ids.note",
         "line_ids.downtime_ids.start_time",
         "line_ids.downtime_ids.end_time",
+        "line_ids.edit_request_ids",
+        "line_ids.edit_request_ids.state",
+        "line_ids.has_pending_edit",
+        "scanned_production_id",
     )
     def _compute_workorder_info(self):
-
         for rec in self:
-
-            # =====================================================
-            # BELUM CHECK IN
-            # =====================================================
-
             if not rec.check_in:
                 rec.workorder_info = ""
                 continue
 
-            # =====================================================
-            # SEMUA DATA DIBACA DENGAN SUDO
-            # Supaya user MES / Leader tidak perlu akses penuh
-            # ke Manufacturing / HR.
-            # =====================================================
-
             rec_sudo = rec.sudo()
-
             lines = rec_sudo.line_ids.sorted("sequence")
-
-            # =====================================================
-            # TIDAK ADA WORK ORDER
-            # =====================================================
-
+            filter_mo = rec.env.context.get("mes_filter_production_id") or rec.scanned_production_id.id
+            if filter_mo:
+                lines = lines.filtered(
+                    lambda l: l.workorder_id.production_id.id == filter_mo
+                )
             if not lines:
                 rec.workorder_info = (
-                    "<p style='color:#999;'>"
-                    "Tidak ada Work Order untuk hari ini."
-                    "</p>"
+                    "<p style='color:#999;'>Tidak ada Work Order untuk MO ini.</p>"
+                    if rec.env.context.get("mes_filter_production_id") or rec.scanned_production_id
+                    else "<p style='color:#999;'>Tidak ada Work Order untuk hari ini.</p>"
                 )
                 continue
 
-            # =====================================================
-            # PISAHKAN ACTIVE DAN DONE
-            # =====================================================
-
-            active_lines = lines.filtered(
-                lambda l: l.state != "done"
-            )
-
-            done_lines = lines.filtered(
-                lambda l: l.state == "done"
-            )
-
+            active_lines = lines.filtered(lambda l: l.state != "done")
+            done_lines = lines.filtered(lambda l: l.state == "done")
             html = []
-
-            # =====================================================
-            # SECTION ACTIVE
-            # =====================================================
-
             total_active = len(active_lines)
 
             for idx, line in enumerate(active_lines, start=1):
-
-                # -------------------------------------------------
-                # SELALU DEFINISIKAN line_sudo DI DALAM LOOP
-                # -------------------------------------------------
-
-                line_sudo = line.sudo()
-                wo = line_sudo.workorder_id.sudo()
-
-                # -------------------------------------------------
-                # DATA WORK ORDER
-                # -------------------------------------------------
-
-                leader = (
-                    wo.leader_id.sudo().name
-                    if wo.leader_id
-                    else "-"
-                )
-
-                workcenter_name = (
-                    wo.workcenter_id.sudo().name
-                    if wo.workcenter_id
-                    else "-"
-                )
-
-                production_name = (
-                    wo.production_id.sudo().name
-                    if wo.production_id
-                    else "-"
-                )
-
-                product_name = (
-                    wo.product_id.sudo().display_name
-                    if wo.product_id
-                    else "-"
-                )
-
-                # =================================================
-                # CEK APAKAH WO BELUM BOLEH START
-                # =================================================
-
-                if (
-                    line_sudo.state != "running"
-                    and not line_sudo.can_start
-                ):
-
-                    html.append(f"""
-                    <div style="
-                        border:1px solid #dcdcdc;
-                        border-radius:8px;
-                        padding:12px;
-                        margin-bottom:12px;
-                        background:#f8f9fa;
-                    ">
-
-                        <div style="
-                            display:flex;
-                            justify-content:space-between;
-                            align-items:center;
-                            gap:12px;
-                        ">
-
-                            <h4 style="
-                                margin:0;
-                                color:#0b72b9;
-                            ">
-                                📍 {workcenter_name}
-                                ({idx}/{total_active})
-                            </h4>
-
-                            <span style="
-                                display:inline-block;
-                                padding:3px 10px;
-                                border-radius:12px;
-                                background:#e9ecef;
-                                color:#555;
-                                font-size:12px;
-                                font-weight:bold;
-                            ">
-                                {line_sudo.state.upper()}
-                            </span>
-
-                        </div>
-
-                    </div>
-                    """)
-
-                    continue
-
-                # =================================================
-                # ACTION BUTTON
-                #
-                # RUNNING  -> STOP
-                # CAN START -> START
-                # =================================================
-
+                line_sudo, wo, labels = rec_sudo._wo_line_labels(line)
                 action_button = ""
-
                 if line_sudo.state == "running":
-
-                    # Cari bagian tombol STOP (sekitar line 360-390), ganti href jadi onclick:
                     action_button = f"""
                     <div style="text-align:right;margin-top:14px;">
-                        <button
-                            onclick="mesStop({line_sudo.id})"
+                        <button onclick="mesStop({line_sudo.id})"
                             style="display:inline-block;padding:8px 16px;background:#dc3545;
                             color:white;border-radius:6px;font-size:13px;font-weight:bold;
-                            border:none;cursor:pointer;">
-                            ⏹️ STOP
-                        </button>
+                            border:none;cursor:pointer;">⏹️ STOP</button>
                     </div>
                     """
-
-                elif line_sudo.can_start:
+                else:
                     action_button = f"""
                     <div style="text-align:right;margin-top:14px;">
-                        <button
-                            onclick="mesStart({line_sudo.id}, this)"
+                        <button onclick="mesStart({line_sudo.id}, this)"
                             style="display:inline-block;padding:8px 16px;background:#28a745;
                             color:white;border-radius:6px;font-size:13px;font-weight:bold;
-                            border:none;cursor:pointer;">
-                            ▶️ START
-                        </button>
+                            border:none;cursor:pointer;">▶️ START</button>
                     </div>
                     """
 
-                # =================================================
-                # HTML ACTIVE
-                # =================================================
-
-                html.append(f"""
-                <div style="
-                    border:1px solid #28a745;
-                    border-radius:8px;
-                    padding:12px;
-                    margin-bottom:12px;
-                    background:#f4fbf6;
-                ">
-
-                    <div style="
-                        display:flex;
-                        justify-content:space-between;
-                        align-items:center;
-                    ">
-
-                        <h4 style="
-                            margin:0;
-                            color:#0b72b9;
-                        ">
-                            📍 {workcenter_name}
-                            ({idx}/{total_active})
-                        </h4>
-
-                        <span style="
-                            background:#28a745;
-                            color:white;
-                            padding:2px 10px;
-                            border-radius:12px;
-                            font-size:12px;
-                            font-weight:bold;
-                        ">
-                            {line_sudo.state.upper()}
-                        </span>
-
-                    </div>
-
-                    <p>
-                        <b>Leader :</b> {leader}
-                    </p>
-
-                    <p>
-                        <b>Manufacturing Order</b><br/>
-                        {production_name}
-                    </p>
-
-                    <p>
-                        <b>Work Order</b><br/>
-                        {wo.name or "-"}
-                    </p>
-
-                    <p>
-                        <b>Product</b><br/>
-                        {product_name}
-                    </p>
-
-                    <p>
-                        <b>Target</b><br/>
-                        {line_sudo.qty_target}
-                    </p>
-
-                    <p>
-                        <b>Output</b><br/>
-                        {line_sudo.qty_actual}
-                    </p>
-
-                    <p>
-                        <b>Status</b><br/>
-                        {line_sudo.state.upper()}
-                    </p>
-
-                    {rec_sudo._render_downtime_html(line_sudo)}
-
-                    {rec_sudo._render_productivity_period_html(line_sudo)}
-
-                    {action_button}
-
-                </div>
-                """)
-
-            # =====================================================
-            # SEMUA WO AKTIF SUDAH SELESAI
-            # =====================================================
+                html.append(rec_sudo._render_wo_card(
+                    rec_sudo, line_sudo, labels, idx, total_active,
+                    line_sudo.state.upper(), action_button,
+                ))
 
             if not active_lines:
-
                 html.append("""
-                <p style="
-                    color:#28a745;
-                    font-weight:bold;
-                    margin-top:12px;
-                ">
+                <p style="color:#28a745;font-weight:bold;margin-top:12px;">
                     🎉 Semua Work Order hari ini sudah selesai.
                 </p>
                 """)
 
-            # =====================================================
-            # SECTION DONE
-            #
-            # EDIT HANYA MUNCUL DI SINI
-            # Jadi selama WO belum DONE,
-            # tombol Edit TIDAK AKAN MUNCUL.
-            # =====================================================
-
             if done_lines:
-
                 total_done = len(done_lines)
-
                 html.append("""
-                <hr style="
-                    margin:24px 0;
-                    border:none;
-                    border-top:2px dashed #ccc;
-                " />
-
-                <h3 style="
-                    color:#555;
-                    margin-bottom:12px;
-                ">
-                    Sudah Selesai
-                </h3>
+                <hr style="margin:24px 0;border:none;border-top:2px dashed #ccc;" />
+                <h3 style="color:#555;margin-bottom:12px;">Sudah Selesai</h3>
                 """)
-
-                # =================================================
-                # LOOP SETIAP WO YANG SUDAH DONE
-                # =================================================
-
                 for idx, line in enumerate(done_lines, start=1):
-
-                    line_sudo = line.sudo()
-                    wo = line_sudo.workorder_id.sudo()
-
-                    # -------------------------------------------------
-                    # DATA WORK ORDER
-                    # -------------------------------------------------
-
-                    leader = (
-                        wo.leader_id.sudo().name
-                        if wo.leader_id
-                        else "-"
-                    )
-
-                    workcenter_name = (
-                        wo.workcenter_id.sudo().name
-                        if wo.workcenter_id
-                        else "-"
-                    )
-
-                    production_name = (
-                        wo.production_id.sudo().name
-                        if wo.production_id
-                        else "-"
-                    )
-
-                    product_name = (
-                        wo.product_id.sudo().display_name
-                        if wo.product_id
-                        else "-"
-                    )
-
-                    # =================================================
-                    # EDIT BUTTON
-                    #
-                    # HANYA UNTUK WO DONE
-                    #
-                    # waiting -> tampil "Menunggu persetujuan edit"
-                    # selain waiting -> tampil tombol Edit
-                    # =================================================
-
-                    edit_button = ""
-
-                    if line_sudo.has_pending_edit:
-                        # cek state edit request-nya
-                        pending_request = self.env["mes.scan.approval.edit.request"].sudo().search([
-                            ("line_id", "=", line_sudo.id),
-                            ("state", "in", ["waiting", "approved"]),
-                        ], limit=1, order="create_date desc")
-
-                        if pending_request and pending_request.state == "approved":
-                            edit_status_text = "✅ Sudah disetujui, konfirmasi memo ke Leader"
-                            edit_status_color = "#28a745"
-                        else:
-                            edit_status_text = "⏳ Menunggu persetujuan edit"
-                            edit_status_color = "#888"
-
-                        edit_button = f"""
+                    line_sudo, wo, labels = rec_sudo._wo_line_labels(line)
+                    latest_request = line_sudo.edit_request_ids.sorted(
+                        "create_date", reverse=True
+                    )[:1]
+                    if latest_request and latest_request.state == "waiting":
+                        edit_button = """
                         <div style="text-align:right; margin-top:10px;">
-                            <span style="font-size:12px; color:{edit_status_color};">
-                                {edit_status_text}
+                            <span style="font-size:12px; color:#888;">
+                                ⏳ Menunggu persetujuan edit
                             </span>
                         </div>
                         """
-
+                    elif latest_request and latest_request.state == "approved":
+                        edit_button = """
+                        <div style="text-align:right; margin-top:10px;">
+                            <span style="font-size:12px; color:#28a745;">
+                                ✅ Edit sudah disetujui
+                            </span>
+                        </div>
+                        """
                     else:
-
                         edit_button = f"""
                         <div style="text-align:right;margin-top:10px;">
-                            <button
-                                data-mes-edit="{line_sudo.id}"
+                            <button data-mes-edit="{line_sudo.id}"
                                 style="display:inline-block;padding:6px 14px;background:#6c757d;
                                 color:white;border-radius:5px;border:none;font-size:12px;
-                                font-weight:bold;cursor:pointer;">
-                                ✏️ Edit
-                            </button>
+                                font-weight:bold;cursor:pointer;">✏️ Edit</button>
                         </div>
                         """
-
-                    # =================================================
-                    # HTML DONE
-                    # =================================================
-
-                    html.append(f"""
-                    <div style="
-                        border:1px solid #28a745;
-                        border-radius:8px;
-                        padding:12px;
-                        margin-bottom:12px;
-                        background:#f4fbf6;
-                    ">
-
-                        <div style="
-                            display:flex;
-                            justify-content:space-between;
-                            align-items:center;
-                        ">
-
-                            <h4 style="
-                                margin:0;
-                                color:#0b72b9;
-                            ">
-                                📍 {workcenter_name}
-                                ({idx}/{total_done})
-                            </h4>
-
-                            <span style="
-                                background:#28a745;
-                                color:white;
-                                padding:2px 10px;
-                                border-radius:12px;
-                                font-size:12px;
-                                font-weight:bold;
-                            ">
-                                ✅ SELESAI
-                            </span>
-
-                        </div>
-
-                        <p>
-                            <b>Leader :</b> {leader}
-                        </p>
-
-                        <p>
-                            <b>Manufacturing Order</b><br/>
-                            {production_name}
-                        </p>
-
-                        <p>
-                            <b>Work Order</b><br/>
-                            {wo.name or "-"}
-                        </p>
-
-                        <p>
-                            <b>Product</b><br/>
-                            {product_name}
-                        </p>
-
-                        <p>
-                            <b>Target</b><br/>
-                            {line_sudo.qty_target}
-                        </p>
-
-                        <p>
-                            <b>Output</b><br/>
-                            {line_sudo.qty_actual}
-                        </p>
-
-                        <p>
-                            <b>Status</b><br/>
-                            {line_sudo.state.upper()}
-                        </p>
-
-                        {rec_sudo._render_downtime_html(line_sudo)}
-
-                        {rec_sudo._render_productivity_period_html(line_sudo)}
-
-                        {edit_button}
-
-                    </div>
-                    """)
-
-                    html.append("""
-                    <script>
-                    function mesScanEditRequest(lineId, btn) {
-
-                        // Cegah double click
-                        btn.disabled = true;
-                        btn.innerText = '⏳ Memproses...';
-
-                        // ── POPUP KONFIRMASI ──────────────────────────────────
-                        const backdrop = document.createElement('div');
-                        Object.assign(backdrop.style, {
-                            position:'fixed', inset:'0', background:'rgba(0,0,0,0.55)',
-                            zIndex:'99999', display:'flex', alignItems:'center', justifyContent:'center'
-                        });
-
-                        const box = document.createElement('div');
-                        Object.assign(box.style, {
-                            background:'white', borderRadius:'12px', padding:'28px 24px',
-                            width:'340px', maxWidth:'90vw', textAlign:'center',
-                            boxShadow:'0 8px 32px rgba(0,0,0,0.25)', fontFamily:'Arial,sans-serif'
-                        });
-
-                        box.innerHTML = `
-                            <div style="font-size:36px;margin-bottom:10px;">⚠️</div>
-                            <h3 style="margin:0 0 8px;">Ajukan Edit?</h3>
-                            <p style="color:#777;font-size:13px;margin-bottom:20px;">
-                                Permintaan edit akan dikirim ke Leader untuk disetujui.
-                                Setelah disetujui, Leader akan membuat Memo ke Tim IT.
-                            </p>
-                            <div style="display:flex;gap:10px;">
-                                <button id="mes-edit-cancel" style="flex:1;padding:12px;border:none;
-                                    border-radius:6px;background:#6c757d;color:white;
-                                    font-size:14px;cursor:pointer;">Batal</button>
-                                <button id="mes-edit-confirm" style="flex:1;padding:12px;border:none;
-                                    border-radius:6px;background:#0b72b9;color:white;
-                                    font-size:14px;font-weight:bold;cursor:pointer;">Ya, Ajukan</button>
-                            </div>
-                        `;
-
-                        backdrop.appendChild(box);
-                        document.body.appendChild(backdrop);
-
-                        // Batal → tutup popup, enable tombol lagi
-                        box.querySelector('#mes-edit-cancel').onclick = () => {
-                            backdrop.remove();
-                            btn.disabled = false;
-                            btn.innerText = '✏️ Edit';
-                        };
-
-                        // Konfirmasi → kirim request via fetch
-                        box.querySelector('#mes-edit-confirm').onclick = async () => {
-                            box.querySelector('#mes-edit-confirm').disabled = true;
-                            box.querySelector('#mes-edit-confirm').innerText = '⏳...';
-
-                            try {
-                                const resp = await fetch(`/mes/edit/${lineId}/request-json`, {
-                                    method: 'POST',
-                                    headers: {'Content-Type': 'application/json'},
-                                    body: JSON.stringify({}),
-                                });
-                                const data = await resp.json();
-
-                                backdrop.remove();
-
-                                // ── POPUP HASIL ──────────────────────────────────
-                                const resultBackdrop = document.createElement('div');
-                                Object.assign(resultBackdrop.style, {
-                                    position:'fixed', inset:'0', background:'rgba(0,0,0,0.55)',
-                                    zIndex:'99999', display:'flex', alignItems:'center', justifyContent:'center'
-                                });
-
-                                const resultBox = document.createElement('div');
-                                Object.assign(resultBox.style, {
-                                    background:'white', borderRadius:'12px', padding:'28px 24px',
-                                    width:'340px', maxWidth:'90vw', textAlign:'center',
-                                    boxShadow:'0 8px 32px rgba(0,0,0,0.25)', fontFamily:'Arial,sans-serif'
-                                });
-
-                                const isOk = data.success;
-                                resultBox.innerHTML = `
-                                    <div style="font-size:36px;margin-bottom:10px;">
-                                        ${isOk ? '✅' : '❌'}
-                                    </div>
-                                    <h3 style="margin:0 0 8px;color:${isOk ? '#28a745' : '#dc3545'};">
-                                        ${isOk ? 'Request Terkirim' : 'Gagal'}
-                                    </h3>
-                                    <p style="color:#555;font-size:13px;margin-bottom:20px;">
-                                        ${data.message || '-'}
-                                    </p>
-                                    <button id="mes-edit-ok" style="width:100%;padding:12px;border:none;
-                                        border-radius:6px;background:${isOk ? '#28a745' : '#dc3545'};
-                                        color:white;font-size:14px;font-weight:bold;cursor:pointer;">
-                                        OK
-                                    </button>
-                                `;
-
-                                resultBackdrop.appendChild(resultBox);
-                                document.body.appendChild(resultBackdrop);
-
-                                // OK → tutup popup + refresh workorder_info
-                                resultBox.querySelector('#mes-edit-ok').onclick = () => {
-                                    resultBackdrop.remove();
-                                    // Trigger reload form Odoo supaya workorder_info ter-refresh
-                                    if (window.__owl__ || window.odoo) {
-                                        window.location.reload();
-                                    } else {
-                                        window.location.reload();
-                                    }
-                                };
-
-                            } catch (e) {
-                                backdrop.remove();
-                                alert('Terjadi kesalahan. Silakan coba lagi.');
-                                btn.disabled = false;
-                                btn.innerText = '✏️ Edit';
-                            }
-                        };
-                    }
-                    </script>
-                    """)
-
-            # =====================================================
-            # HASIL AKHIR HTML
-            # =====================================================
+                    html.append(rec_sudo._render_wo_card(
+                        rec_sudo, line_sudo, labels, idx, total_done,
+                        "✅ SELESAI", edit_button,
+                    ))
 
             rec.workorder_info = "".join(html)
 
@@ -949,19 +486,13 @@ class MesScanApprovalLine(models.Model):
 
     can_start = fields.Boolean(compute="_compute_can_start")
 
-    @api.depends("sequence", "approval_id.line_ids.state", "approval_id.line_ids.sequence")
+    @api.depends("state")
     def _compute_can_start(self):
         for line in self:
-            prior_lines = line.approval_id.line_ids.filtered(
-                lambda l: l.sequence < line.sequence
-            )
-            line.can_start = all(l.state == "done" for l in prior_lines)
+            line.can_start = line.state not in ("done", "running")
 
     def action_start(self):
         self.ensure_one()
-
-        if not self.can_start:
-            raise UserError("Selesaikan terlebih dahulu Work Order yang sedang berjalan.")
 
         wo = self.workorder_id.sudo()
 
@@ -979,6 +510,13 @@ class MesScanApprovalLine(models.Model):
         if wo.date_planned_start and wo.date_planned_start > wo.date_planned_finished:
             wo.date_planned_start = scan_time
 
+        operator = self.approval_id.employee_id
+        if operator:
+            wo_vals = {"operator_id": operator.id}
+            if not wo.production_id.operator_id:
+                wo.production_id.write({"operator_id": operator.id})
+            wo.write(wo_vals)
+
         if wo.state != "progress":
             wo.button_start()
         else:
@@ -994,6 +532,9 @@ class MesScanApprovalLine(models.Model):
         open_downtime = self.downtime_ids.filtered(lambda d: not d.end_time)
         if open_downtime:
             open_downtime[0].write({"end_time": scan_time})
+            self._close_open_problem_productivity(scan_time)
+
+        self._sync_open_productivity_user_and_start(scan_time)
 
         self.write({
             "state": "running",
@@ -1003,7 +544,8 @@ class MesScanApprovalLine(models.Model):
         if self.approval_id.state != "running":
             self.approval_id.write({"state": "running"})
 
-    def action_stop(self, reason, note=None, qty=None, loss_id=None, create_backorder=None):
+    def action_stop(self, reason, note=None, qty=None, loss_id=None, create_backorder=None, ng_qty=None,
+                    start_hour=None, start_minute=None, end_hour=None, end_minute=None):
         self.ensure_one()
 
         wo = self.workorder_id.sudo()
@@ -1019,7 +561,32 @@ class MesScanApprovalLine(models.Model):
             if produced_qty <= 0:
                 raise UserError("Jumlah hasil produksi harus lebih dari 0.")
 
-            self._finish_production(produced_qty, create_backorder)
+            if self._is_output_over_target(produced_qty):
+                raise UserError("Output Melebihi Target")
+
+            if create_backorder is None:
+                create_backorder = False
+
+            backorders = self._finish_production(
+                produced_qty,
+                create_backorder,
+                ng_qty=ng_qty or 0.0,
+            )
+
+            if loss_id:
+                self._record_problem_period(
+                    loss_id,
+                    start_hour, start_minute, end_hour, end_minute,
+                    note=note,
+                )
+            elif start_hour not in (None, ""):
+                latest_time = wo.time_ids.sorted("id", reverse=True)[:1]
+                if latest_time:
+                    self._apply_manual_productivity_period(
+                        latest_time,
+                        start_hour, start_minute, end_hour, end_minute,
+                        note=note,
+                    )
 
             self.write({
                 "stop_time": now,
@@ -1027,71 +594,93 @@ class MesScanApprovalLine(models.Model):
                 "qty_actual": self.qty_actual + produced_qty,
                 "state": "done",
             })
+            return backorders
 
         else:
-    # reason == "stop"
             if not loss_id:
                 raise UserError("Alasan stop harus dipilih.")
-
-            open_times = wo.time_ids.filtered(lambda t: not t.date_end)
-
-            _logger.warning("MES DEBUG STOP - open_times ditemukan: %s", open_times.ids)
-
-            if open_times:
-                latest_open = open_times.sorted("id", reverse=True)[0]
-                latest_open.write({
-                    "date_end": now,
+            if start_hour in (None, "") or start_minute in (None, "") or end_hour in (None, "") or end_minute in (None, ""):
+                open_times = wo.time_ids.filtered(lambda t: not t.date_end)
+                if open_times:
+                    latest_open = open_times.sorted("id", reverse=True)[0]
+                    self._fill_productivity_end(latest_open, now)
+                problem = self._create_problem_productivity(loss_id, now)
+                if note:
+                    problem.sudo().write({"description": note})
+                self.env["mes.scan.approval.line.downtime"].sudo().create({
+                    "line_id": self.id,
                     "loss_id": loss_id,
+                    "note": note,
+                    "start_time": now,
                 })
-                _logger.warning(
-                    "MES DEBUG STOP - ditutup time_id=%s loss_id=%s date_end=%s",
-                    latest_open.id, loss_id, now
-                )
+                self.write({
+                    "stop_time": now,
+                    "duration": self.duration + duration,
+                    "state": "ready",
+                })
             else:
-                _logger.warning("MES DEBUG STOP - TIDAK ADA open_time yang ditemukan!")
+                start_dt, end_dt = self._record_problem_period(
+                    loss_id,
+                    start_hour, start_minute, end_hour, end_minute,
+                    note=note,
+                )
+                self.env["mes.scan.approval.line.downtime"].sudo().create({
+                    "line_id": self.id,
+                    "loss_id": loss_id,
+                    "note": note,
+                    "start_time": start_dt,
+                    "end_time": end_dt,
+                })
+                self.write({
+                    "stop_time": start_dt,
+                    "duration": self.duration + duration,
+                    "state": "ready",
+                })
 
-            self.env["mes.scan.approval.line.downtime"].sudo().create({
-                "line_id": self.id,
-                "loss_id": loss_id,
-                "note": note,
-                "start_time": now,
-            })
-
-            self.write({
-                "stop_time": now,
-                "duration": self.duration + duration,
-                "state": "ready",
-            })
-
-    def _finish_production(self, produced_qty, create_backorder):
+    def _finish_production(self, produced_qty, create_backorder, ng_qty=0.0):
         self.ensure_one()
 
         wo = self.workorder_id.sudo()
         production = wo.production_id.sudo()
         now = fields.Datetime.now()
+        good_qty = produced_qty or 0.0
+        ng_qty = ng_qty or 0.0
 
-        wo.write({"qty_producing": produced_qty})
+        if ng_qty > 0:
+            self.env["eran.ng.mrp.production"].sudo().create({
+                "production_id": production.id,
+                "workcenter_id": wo.workcenter_id.id,
+                "quantity": ng_qty,
+            })
+            if hasattr(wo, "_get_ng_ids"):
+                wo._get_ng_ids()
+
+        production.invalidate_recordset(["ng_ids", "ng_total", "good_total", "qty_producing"])
+        ng_total = sum(production.ng_ids.mapped("quantity"))
+        new_good = (production.good_total or 0.0) + good_qty
+        production.with_context(skip_good_total_check=True).write({
+            "good_total": new_good,
+            "qty_producing": new_good + ng_total,
+        })
+
+        wo.write({"qty_producing": good_qty})
 
         open_time = wo.time_ids.filtered(lambda t: not t.date_end)
         if open_time:
-            open_time[0].write({"date_end": now})
+            self._fill_productivity_end(open_time[0], now)
         latest_time = wo.time_ids.sorted("date_start", reverse=True)[:1]
         if latest_time and not latest_time.date_end:
-            latest_time.write({"date_end": now})
+            self._fill_productivity_end(latest_time, now)
 
         if wo.state != "done":
             wo.with_context(skip_good_total_check=True).button_finish()
-
-        production.write({
-            "good_total": production.good_total + produced_qty,
-        })
 
         remaining_wo = production.workorder_ids.filtered(
             lambda w: w.id != wo.id and w.state not in ("done", "cancel")
         )
 
         if remaining_wo:
-            return
+            return self.env["mrp.production"]
 
         result = production.with_context(skip_good_total_check=True).button_mark_done()
 
@@ -1101,9 +690,18 @@ class MesScanApprovalLine(models.Model):
             ).create({})
 
             if create_backorder:
+                existing = production.procurement_group_id.mrp_production_ids
                 wizard.action_backorder()
-            else:
-                wizard.action_close_mo()
+                production.invalidate_recordset()
+                new_mos = production.procurement_group_id.mrp_production_ids - existing
+                new_mos = new_mos.filtered(lambda p: p.id != production.id)
+                if not new_mos:
+                    new_mos = production.procurement_group_id.mrp_production_ids.filtered(
+                        lambda p: p.id != production.id
+                    )
+                return new_mos
+            wizard.action_close_mo()
+        return self.env["mrp.production"]
 
     def _is_last_active_workorder(self):
         self.ensure_one()
@@ -1116,6 +714,167 @@ class MesScanApprovalLine(models.Model):
     def _check_underproduced(self, produced_qty):
         self.ensure_one()
         return (self.qty_actual + produced_qty) < self.qty_target
+
+    def _is_output_over_target(self, produced_qty):
+        self.ensure_one()
+        target = self.qty_target or 0.0
+        if target <= 0:
+            return False
+        return (self.qty_actual or 0.0) + produced_qty > target
+
+    def _record_problem_period(self, loss_id, start_hour, start_minute, end_hour, end_minute, note=None):
+        if start_hour in (None, "") or start_minute in (None, "") or end_hour in (None, "") or end_minute in (None, ""):
+            raise UserError("Isi jam dari dan sampai untuk problem.")
+        wo = self.workorder_id.sudo()
+        start_dt, start_day, _ = self._dt_from_jakarta_hm(start_hour, start_minute)
+        end_dt, _, _ = self._dt_from_jakarta_hm(end_hour, end_minute, start_day)
+        if end_dt <= start_dt:
+            end_dt, _, _ = self._dt_from_jakarta_hm(
+                end_hour, end_minute, start_day + timedelta(days=1)
+            )
+        open_times = wo.time_ids.filtered(lambda t: not t.date_end)
+        if open_times:
+            self._fill_productivity_end(open_times.sorted("id", reverse=True)[0], start_dt)
+        problem = self._create_problem_productivity(loss_id, start_dt)
+        self._apply_manual_productivity_period(
+            problem,
+            start_hour, start_minute, end_hour, end_minute,
+            note=note,
+        )
+        return start_dt, end_dt
+
+    def _dt_from_jakarta_hm(self, hour, minute, base_day=None):
+        tz = pytz.timezone("Asia/Jakarta")
+        now_utc = fields.Datetime.now()
+        now_local = pytz.utc.localize(now_utc).astimezone(tz)
+        day = base_day or now_local.date()
+        hour = int(hour)
+        minute = int(minute)
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            raise UserError("Jam/menit tidak valid.")
+        local_dt = tz.localize(datetime.combine(day, time(hour, minute, 0)))
+        return local_dt.astimezone(pytz.utc).replace(tzinfo=None), day, hour + minute / 60.0
+
+    def _apply_manual_productivity_period(self, time_rec, start_hour, start_minute, end_hour, end_minute, note=None):
+        if time_rec is None or not time_rec:
+            return
+        if start_hour in (None, "") or start_minute in (None, "") or end_hour in (None, "") or end_minute in (None, ""):
+            if note:
+                time_rec.sudo().write({"description": note})
+            return
+        start_dt, start_day, start_float = self._dt_from_jakarta_hm(start_hour, start_minute)
+        end_dt, end_day, end_float = self._dt_from_jakarta_hm(end_hour, end_minute, start_day)
+        if end_dt <= start_dt:
+            end_dt, end_day, end_float = self._dt_from_jakarta_hm(
+                end_hour, end_minute, start_day + timedelta(days=1)
+            )
+        vals = {
+            "start_date": start_day,
+            "start_time": start_float,
+            "end_date": end_day,
+            "end_time": end_float,
+            "date_start": start_dt,
+            "date_end": end_dt,
+        }
+        if time_rec.loss_id:
+            vals["loss_id"] = time_rec.loss_id.id
+        if note:
+            vals["description"] = note
+        operator = self.workorder_id.sudo().operator_id or self.workorder_id.sudo().production_id.operator_id
+        if operator:
+            vals["operator_id"] = operator.id
+        user = self._eran_operator_user()
+        if user:
+            vals["user_id"] = user.id
+        time_rec.sudo().write(vals)
+
+    def _eran_local_date_hour(self, dt):
+        if not dt:
+            return False, 0.0
+        tz_record = self.with_context(tz="Asia/Jakarta")
+        local = fields.Datetime.context_timestamp(tz_record, dt)
+        return local.date(), local.hour + local.minute / 60.0 + local.second / 3600.0
+
+    def _eran_operator_user(self):
+        wo = self.workorder_id.sudo()
+        employee = (
+            wo.operator_id
+            or wo.production_id.operator_id
+            or self.approval_id.employee_id
+        )
+        if not employee:
+            return self.env["res.users"]
+        if employee.user_id:
+            return employee.user_id.sudo()
+        Users = self.env["res.users"].sudo()
+        email = (employee.work_email or employee.private_email or "").strip()
+        if email:
+            user = Users.search([("login", "=ilike", email), ("active", "=", True)], limit=1)
+            if user:
+                return user
+        name = (employee.name or "").strip()
+        if not name:
+            return self.env["res.users"]
+        return Users.search([
+            ("name", "=ilike", name),
+            ("active", "=", True),
+        ], limit=1)
+
+    def _fill_productivity_start(self, time_rec, start_dt):
+        start_date, start_hour = self._eran_local_date_hour(start_dt)
+        vals = {
+            "start_date": start_date,
+            "start_time": start_hour,
+        }
+        operator = self.workorder_id.sudo().operator_id or self.workorder_id.sudo().production_id.operator_id
+        if operator:
+            vals["operator_id"] = operator.id
+        user = self._eran_operator_user()
+        if user:
+            vals["user_id"] = user.id
+        time_rec.sudo().write(vals)
+
+    def _fill_productivity_end(self, time_rec, end_dt):
+        end_date, end_hour = self._eran_local_date_hour(end_dt)
+        time_rec.sudo().write({
+            "end_date": end_date,
+            "end_time": end_hour,
+            "date_end": end_dt,
+        })
+
+    def _sync_open_productivity_user_and_start(self, start_dt):
+        wo = self.workorder_id.sudo()
+        open_times = wo.time_ids.filtered(lambda t: not t.date_end)
+        if not open_times:
+            return
+        self._fill_productivity_start(open_times.sorted("id", reverse=True)[0], start_dt)
+
+    def _create_problem_productivity(self, loss_id, start_dt):
+        wo = self.workorder_id.sudo()
+        start_date, start_hour = self._eran_local_date_hour(start_dt)
+        vals = {
+            "workorder_id": wo.id,
+            "workcenter_id": wo.workcenter_id.id,
+            "loss_id": loss_id,
+            "start_date": start_date,
+            "start_time": start_hour,
+            "date_start": start_dt,
+        }
+        operator = wo.operator_id or wo.production_id.operator_id
+        if operator:
+            vals["operator_id"] = operator.id
+        user = self._eran_operator_user()
+        if user:
+            vals["user_id"] = user.id
+        return self.env["mrp.workcenter.productivity"].sudo().create(vals)
+
+    def _close_open_problem_productivity(self, end_dt):
+        wo = self.workorder_id.sudo()
+        open_problems = wo.time_ids.filtered(
+            lambda t: not t.date_end and t.loss_id and t.loss_id.loss_type != "productive"
+        )
+        for rec in open_problems:
+            self._fill_productivity_end(rec, end_dt)
 
     def _stop_workorder_without_validating_production(self, workorder, stop_time):
         workorder = workorder.sudo()
@@ -1167,7 +926,7 @@ class MesScanApprovalLine(models.Model):
 
             line.has_pending_edit = bool(
                 line.edit_request_ids.filtered(
-                    lambda r: r.state == "waiting"
+                    lambda r: r.state in ("waiting", "approved")
                 )
             )
 
@@ -1197,7 +956,64 @@ class MesScanApprovalLineDowntime(models.Model):
 class HrEmployee(models.Model):
     _inherit = "hr.employee"
 
-    def _mes_get_or_create_approval(self, barcode):
+    @api.model
+    def _eran_jakarta_day_bounds(self, now_utc=None):
+        """Awal dan akhir hari kalender Asia/Jakarta, dalam UTC naive."""
+        tz = pytz.timezone("Asia/Jakarta")
+        now_utc = now_utc or fields.Datetime.now()
+        if getattr(now_utc, "tzinfo", None):
+            now_utc = now_utc.astimezone(pytz.utc).replace(tzinfo=None)
+        now_local = pytz.utc.localize(now_utc).astimezone(tz)
+        start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = start_local + timedelta(days=1)
+        return (
+            start_local.astimezone(pytz.utc).replace(tzinfo=None),
+            end_local.astimezone(pytz.utc).replace(tzinfo=None),
+        )
+
+    @api.model
+    def _eran_today_attendance(self, employee, now_utc=None):
+        start_utc, end_utc = self._eran_jakarta_day_bounds(now_utc)
+        return self.env["hr.attendance"].sudo().search([
+            ("employee_id", "=", employee.id),
+            ("check_in", ">=", start_utc),
+            ("check_in", "<", end_utc),
+        ], order="check_in desc", limit=1)
+
+    @api.model
+    def _mes_find_production_by_barcode(self, barcode):
+        scanned = (barcode or "").strip()
+        if not scanned:
+            return self.env["mrp.production"]
+        Production = self.env["mrp.production"].sudo()
+        Workorder = self.env["mrp.workorder"].sudo()
+
+        exact = Production.search([("name", "=", scanned)], limit=1)
+        if exact:
+            return exact
+
+        scanned_norm = "".join(scanned.split()).upper()
+        scanned_noslash = scanned_norm.replace("/", "").replace("-", "")
+        for prod in Production.search([("name", "ilike", scanned.split("/")[0])], limit=40):
+            mo_norm = "".join((prod.name or "").split()).upper()
+            mo_noslash = mo_norm.replace("/", "").replace("-", "")
+            if (
+                scanned_norm == mo_norm
+                or scanned_noslash == mo_noslash
+                or (len(scanned_norm) >= 6 and scanned_norm in mo_norm)
+                or (len(mo_norm) >= 6 and mo_norm in scanned_norm)
+            ):
+                return prod
+
+        wo = Workorder.search([("name", "=", scanned)], limit=1)
+        if wo:
+            return wo.production_id
+        wo = Workorder.search([("production_id.name", "=", scanned)], limit=1)
+        if wo:
+            return wo.production_id
+        return Production.browse()
+
+    def _mes_get_or_create_approval(self, barcode, production=None, require_attendance=True):
         """
         Return record mes.scan.approval untuk barcode ini,
         pakai yang sudah ada hari ini kalau ada, atau bikin baru.
@@ -1211,40 +1027,31 @@ class HrEmployee(models.Model):
 
         if not employee:
             return None
+        return self._mes_build_approval(
+            employee, production=production, require_attendance=require_attendance
+        )
+
+    def _mes_build_approval(self, employee, production=None, require_attendance=True):
 
         scan_time = fields.Datetime.now()
-
-        # =========================================================
-        # KONVERSI KE WAKTU LOKAL (Asia/Jakarta)
-        # =========================================================
-
         tz = pytz.timezone("Asia/Jakarta")
         scan_time_local = pytz.utc.localize(scan_time).astimezone(tz)
         scan_hour = scan_time_local.hour + scan_time_local.minute / 60.0
-
-        # Hari ini dalam UTC (untuk query DB)
-        today = scan_time.replace(hour=0, minute=0, second=0, microsecond=0)
-        tomorrow = today + timedelta(days=1)
+        today, tomorrow = self._eran_jakarta_day_bounds(scan_time)
 
         # =========================================================
         # VALIDASI 1: WAJIB ABSEN DULU DI HR.ATTENDANCE
-        # Kalau belum ada check_in hari ini, tolak scan MO
         # =========================================================
 
-        attendance = self.env["hr.attendance"].sudo().search([
-            ("employee_id", "=", employee.id),
-            ("check_in", ">=", today),
-            ("check_in", "<", tomorrow),
-        ], order="check_in desc", limit=1)
-
-        if not attendance:
-            _logger.warning(
-                "[DEV MODE] %s belum absen wajah, pakai scan_time sebagai check_in dummy",
-                employee.name
-            )
-            check_in_value = scan_time
-        else:
-            check_in_value = attendance.check_in
+        attendance = self._eran_today_attendance(employee, scan_time)
+        if require_attendance and not attendance:
+            return {
+                "error": (
+                    f"{employee.name} belum melakukan absen masuk hari ini. "
+                    "Silakan scan absen di mesin absensi terlebih dahulu."
+                )
+            }
+        check_in_value = attendance.check_in if attendance else scan_time
 
         # =========================================================
         # VALIDASI 2: CEK JAM SHIFT
@@ -1310,19 +1117,21 @@ class HrEmployee(models.Model):
         # CARI WO YANG COCOK
         # =========================================================
 
-        domain = [
-            "|",
-                ("operator_id", "=", employee.id),
-                ("production_id.operator_id", "=", employee.id),
-            ("state", "in", ["pending", "waiting", "ready", "progress", "done"]),
-            ("production_id.date_planned_start", ">=", today),
-            ("production_id.date_planned_start", "<", tomorrow),
-        ]
-
-        workorders = self.env["mrp.workorder"].sudo().search(domain)
-
-        _logger.warning("MES DEBUG - domain dipakai: %s", domain)
-        _logger.warning("MES DEBUG - total WO ditemukan: %s", len(workorders))
+        if production:
+            workorders = production.workorder_ids.filtered(
+                lambda wo: wo.state in ("pending", "waiting", "ready", "progress", "done")
+            )
+        else:
+            domain = [
+                "|",
+                    ("operator_id", "=", employee.id),
+                    ("production_id.operator_id", "=", employee.id),
+                ("state", "in", ["pending", "waiting", "ready", "progress", "done"]),
+                ("production_id.date_planned_start", ">=", today),
+                ("production_id.date_planned_start", "<", tomorrow),
+            ]
+            workorders = self.env["mrp.workorder"].sudo().search(domain)
+        _logger.debug("MES scan WO count=%s production=%s", len(workorders), production and production.name)
 
         STATE_MAP = {
             "pending": "ready",
@@ -1343,23 +1152,25 @@ class HrEmployee(models.Model):
         ], limit=1)
 
         if existing:
-            existing.write({"scan_time": scan_time})
+            existing.write({
+                "scan_time": scan_time,
+                "scanned_production_id": production.id if production else False,
+            })
 
             existing_wo_ids = existing.line_ids.mapped("workorder_id").ids
             new_workorders = workorders.filtered(lambda wo: wo.id not in existing_wo_ids)
 
             if new_workorders:
                 last_sequence = max(existing.line_ids.mapped("sequence") or [0])
-
-                for idx, wo in enumerate(new_workorders, start=1):
-                    self.env["mes.scan.approval.line"].sudo().create({
-                        "approval_id": existing.id,
-                        "sequence": last_sequence + idx,
-                        "workorder_id": wo.id,
-                        "qty_target": wo.production_id.product_qty,
-                        "qty_actual": 0,
-                        "state": STATE_MAP.get(wo.state, "ready"),
-                    })
+                Line = self.env["mes.scan.approval.line"].sudo()
+                Line.create([{
+                    "approval_id": existing.id,
+                    "sequence": last_sequence + idx,
+                    "workorder_id": wo.id,
+                    "qty_target": wo.production_id.product_qty,
+                    "qty_actual": 0,
+                    "state": STATE_MAP.get(wo.state, "ready"),
+                } for idx, wo in enumerate(new_workorders, start=1)])
 
             return existing
 
@@ -1368,6 +1179,8 @@ class HrEmployee(models.Model):
         # =========================================================
 
         if not workorders:
+            if production:
+                return {"error": f"Tidak ada Work Order pada MO {production.name}."}
             return {"error": f"Tidak ada Work Order untuk {employee.name} hari ini."}
 
         approval = self.env["mes.scan.approval"].sudo().create({
@@ -1377,17 +1190,17 @@ class HrEmployee(models.Model):
             "shift_id": workorders[:1].shift_id.id,
             "workcenter_id": workorders[:1].workcenter_id.id,
             "state": "ready",
+            "scanned_production_id": production.id if production else False,
         })
 
-        for seq, wo in enumerate(workorders, start=1):
-            self.env["mes.scan.approval.line"].sudo().create({
-                "approval_id": approval.id,
-                "sequence": seq,
-                "workorder_id": wo.id,
-                "qty_target": wo.production_id.product_qty,
-                "qty_actual": 0,
-                "state": STATE_MAP.get(wo.state, "ready"),
-            })
+        self.env["mes.scan.approval.line"].sudo().create([{
+            "approval_id": approval.id,
+            "sequence": seq,
+            "workorder_id": wo.id,
+            "qty_target": wo.production_id.product_qty,
+            "qty_actual": 0,
+            "state": STATE_MAP.get(wo.state, "ready"),
+        } for seq, wo in enumerate(workorders, start=1)])
 
         return approval
 
@@ -1397,35 +1210,19 @@ class HrEmployee(models.Model):
         Dipanggil oleh kiosk attendance bawaan Odoo.
         Catat hr.attendance lalu arahkan ke halaman sambutan custom.
         """
-        import pytz
-        from datetime import timedelta
-
         employee = self.sudo().search([("barcode", "=", barcode)], limit=1)
 
         if not employee:
             return {"warning": "Barcode tidak dikenali."}
 
         now_utc = fields.Datetime.now()
-        tz = pytz.timezone("Asia/Jakarta")
-        now_local = pytz.utc.localize(now_utc).astimezone(tz)
-
-        today_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-        tomorrow_utc = today_utc + timedelta(days=1)
-
-        # Cek sudah absen hari ini belum
-        existing = self.env["hr.attendance"].sudo().search([
-            ("employee_id", "=", employee.id),
-            ("check_in", ">=", today_utc),
-            ("check_in", "<", tomorrow_utc),
-        ], order="check_in desc", limit=1)
+        existing = self._eran_today_attendance(employee, now_utc)
 
         if existing:
-            # Sudah absen — JANGAN buat baru, langsung redirect welcome
-            # tapi tampilkan info sudah absen (bukan buat record baru)
             return {
                 "action": {
                     "type": "ir.actions.act_url",
-                    "url": f"/attendance/welcome/{employee.id}?already=1",
+                    "url": f"/attendance/kiosk/welcome/{employee.id}?already=1",
                     "target": "self",
                 }
             }
@@ -1450,102 +1247,18 @@ class HrEmployee(models.Model):
         return {
             "action": {
                 "type": "ir.actions.act_url",
-                "url": f"/attendance/welcome/{employee.id}",
+                "url": f"/attendance/kiosk/welcome/{employee.id}",
                 "target": "self",
             }
         }
 
     @api.model
     def mes_kiosk_scan(self, barcode):
-        
-        # =========================================================
-        # VALIDASI 1: WAJIB ABSEN DULU DI HR.ATTENDANCE
-        # Dilakukan di sini, bukan di _mes_get_or_create_approval
-        # supaya attendance kiosk bawaan Odoo tidak ikut ke-block
-        # =========================================================
-        
-        import pytz
-        from datetime import timedelta
-
-        scan_time = fields.Datetime.now()
-        tz = pytz.timezone("Asia/Jakarta")
-        scan_time_local = pytz.utc.localize(scan_time).astimezone(tz)
-
-        # Batas hari ini dalam UTC
-        today = scan_time.replace(hour=0, minute=0, second=0, microsecond=0)
-        tomorrow = today + timedelta(days=1)
-
-        employee = self.sudo().search([("barcode", "=", barcode)], limit=1)
-
-        if not employee:
-            return {"warning": "Barcode tidak dikenali."}
-
-        # Cek apakah sudah absen hari ini
-        attendance = self.env["hr.attendance"].sudo().search([
-            ("employee_id", "=", employee.id),
-            ("check_in", ">=", today),
-            ("check_in", "<", tomorrow),
-        ], order="check_in desc", limit=1)
-
-        if not attendance:
-            return {
-                "warning": (
-                    f"{employee.name} belum melakukan absen masuk hari ini. "
-                    "Silakan scan absen di mesin absensi terlebih dahulu."
-                )
-            }
-
-        # =========================================================
-        # VALIDASI 2: CEK JAM SHIFT
-        # =========================================================
-
-        scan_hour = scan_time_local.hour + scan_time_local.minute / 60.0
-        shift = getattr(employee, "shift_id", None)
-
-        if shift:
-            shift_start = getattr(shift, "hour_start", None)
-            shift_end   = getattr(shift, "hour_end", None)
-
-            TOLERANSI_AWAL  = 0.5   # 30 menit sebelum shift
-            TOLERANSI_AKHIR = 1.0   # 60 menit setelah shift
-
-            if shift_start is not None and shift_end is not None:
-                batas_awal  = shift_start - TOLERANSI_AWAL
-                batas_akhir = shift_end + TOLERANSI_AKHIR
-
-                # Handle shift malam (lintas tengah malam)
-                if shift_end < shift_start:
-                    dalam_shift = (scan_hour >= batas_awal) or (scan_hour <= batas_akhir)
-                else:
-                    dalam_shift = batas_awal <= scan_hour <= batas_akhir
-
-                if not dalam_shift:
-                    def fmt_jam(h):
-                        jam = int(h)
-                        menit = int(round((h - jam) * 60))
-                        return f"{jam:02d}:{menit:02d}"
-
-                    return {
-                        "warning": (
-                            f"{employee.name} tidak dapat scan MO sekarang. "
-                            f"Jam kerja shift {shift.name} adalah "
-                            f"{fmt_jam(shift_start)} – {fmt_jam(shift_end)}. "
-                            f"Scan dilakukan pukul {scan_time_local.strftime('%H:%M')}."
-                        )
-                    }
-
-        # =========================================================
-        # SEMUA VALIDASI LOLOS — LANJUT PROSES APPROVAL
-        # =========================================================
-
         result = self._mes_get_or_create_approval(barcode)
-
         if isinstance(result, dict) and "error" in result:
             return {"warning": result["error"]}
-
         if not result:
             return {"warning": "Barcode tidak dikenali."}
-
         return {
             "action": {
                 "type": "ir.actions.act_url",
@@ -1554,219 +1267,50 @@ class HrEmployee(models.Model):
             }
         }
 
-class MesScanController(http.Controller):
+    @api.model
+    def mes_mo_kiosk_scan(self, barcode):
+        production = self._mes_find_production_by_barcode(barcode)
+        if not production:
+            return {"warning": "QR MO tidak dikenali. Scan QR di printout MO."}
 
-    def _info_page(self, title, message, color="#28a745"):
-        html = f"""
-        <html>
-        <head><meta charset="utf-8"/><title>{title}</title></head>
-        <body style="
-            font-family: -apple-system, Arial, sans-serif;
-            background:#f4f4f4;
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            height:100vh;
-            margin:0;
-        ">
-            <div style="
-                background:white;
-                border-radius:12px;
-                padding:30px;
-                box-shadow:0 4px 20px rgba(0,0,0,0.15);
-                width:320px;
-                text-align:center;
-            ">
-                <div style="font-size:40px;margin-bottom:10px;">
-                    {"✅" if color == "#28a745" else "⚠️"}
-                </div>
-                <h3 style="margin:0 0 8px 0;color:{color};">{title}</h3>
-                <p style="color:#555;font-size:14px;">{message}</p>
-                <p style="color:#999;font-size:12px;margin-top:20px;">
-                    Silakan kembali ke tab sebelumnya.
-                </p>
-            </div>
-        </body>
-        </html>
-        """
-        return request.make_response(html)
+        employee = production.operator_id
+        if not employee:
+            wo_ops = production.workorder_ids.mapped("operator_id").filtered(lambda e: e)
+            employee = wo_ops[:1]
+        if not employee:
+            employee = self.sudo().search([("user_id", "=", self.env.uid)], limit=1)
+        if not employee:
+            return {"warning": f"MO {production.name} belum punya operator."}
 
-    @http.route("/mes/edit/<int:line_id>", type="http", auth="user")
-    def mes_edit_confirm(self, line_id, **kwargs):
-            line = request.env["mes.scan.approval.line"].sudo().browse(line_id)
-    
-            if not line.exists():
-                return self._info_page("Gagal", f"Line ID {line_id} tidak ditemukan.", color="#dc3545")
-    
-            if line.has_pending_edit:
-                return self._info_page(
-                    "Sudah Menunggu",
-                    "Request edit untuk Work Order ini sudah diajukan dan sedang menunggu persetujuan.",
-                    color="#dc3545",
-                )
-    
-            html = f"""
-            <html>
-            <head><meta charset="utf-8"/><title>Konfirmasi Edit</title></head>
-            <body style="font-family:-apple-system,Arial,sans-serif;background:#f4f4f4;
-                display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
-                <div style="background:white;border-radius:12px;padding:30px;
-                    box-shadow:0 4px 20px rgba(0,0,0,0.15);width:340px;text-align:center;">
-                    <div style="font-size:40px;margin-bottom:10px;">⚠️</div>
-                    <h3 style="margin:0 0 8px 0;">Apakah Anda yakin untuk mengedit form ini?</h3>
-                    <p style="color:#777;font-size:13px;">
-                        {line.workorder_id.name} — {line.workorder_id.production_id.name}
-                    </p>
-                    <p style="color:#555;font-size:13px;margin-bottom:20px;">
-                        Permintaan edit akan dikirim ke Leader untuk disetujui.
-                        Setelah disetujui, Leader akan membuat Memo ke Tim IT
-                        untuk proses perubahan quantity.
-                    </p>
-    
-                    <a href="/mes/edit/{line.id}/request"
-                        style="display:block;margin:10px 0;padding:14px;background:#0b72b9;
-                        color:white;border-radius:6px;text-decoration:none;font-weight:bold;">
-                        Ya, Ajukan Edit
-                    </a>
-                </div>
-            </body>
-            </html>
-            """
-            return request.make_response(html)
-
-    @http.route(
-        "/mes/edit/<int:line_id>/request",
-        type="http",
-        auth="user"
-    )
-    def mes_edit_request(self, line_id, **kwargs):
-
-        line = request.env[
-            "mes.scan.approval.line"
-        ].sudo().browse(line_id)
-
-        if not line.exists():
-            return self._info_page(
-                "Gagal",
-                f"Line ID {line_id} tidak ditemukan.",
-                color="#dc3545",
+        if employee.barcode:
+            result = self._mes_get_or_create_approval(
+                employee.barcode, production=production, require_attendance=False
+            )
+        else:
+            result = self._mes_build_approval(
+                employee, production=production, require_attendance=False
             )
 
-        if line.has_pending_edit:
-            return self._info_page(
-                "Sudah Menunggu",
-                "Request edit sudah diajukan sebelumnya.",
-                color="#dc3545",
-            )
+        if isinstance(result, dict) and "error" in result:
+            return {"warning": result["error"]}
+        if not result:
+            return {"warning": "Gagal membuka MO Scan."}
 
-        # =====================================================
-        # CEK LEADER
-        # =====================================================
-
-        leader = line.leader_id.sudo()
-
-        if not leader:
-            return self._info_page(
-                "Gagal",
-                "Work Order ini belum memiliki Leader.",
-                color="#dc3545",
-            )
-
-        leader_user = request.env[
-            "mes.scan.approval.edit.request"
-        ].sudo()._find_leader_user(leader)
-
-        if not leader_user:
-            return self._info_page(
-                "Gagal",
-                (
-                    f"Leader {leader.name} belum memiliki "
-                    "User Odoo dan tidak ditemukan User "
-                    "dengan nama yang sesuai."
-                ),
-                color="#dc3545",
-            )
-
-        _logger.warning(
-            "MES EDIT REQUEST DEBUG: "
-            "line_id=%s | leader_id=%s | leader_name=%s | "
-            "user_id=%s | user_name=%s | login=%s",
-            line.id,
-            leader.id,
-            leader.name,
-            leader_user.id,
-            leader_user.name,
-            leader_user.login,
-        )
-        # =====================================================
-        # CREATE REQUEST
-        # =====================================================
-
-        edit_request = request.env[
-            "mes.scan.approval.edit.request"
-        ].sudo().create({
-            "line_id": line.id,
-        })
-
-        # =====================================================
-        # REALTIME POPUP KE LEADER
-        # =====================================================
-
-        edit_request._send_leader_notification()
-
-        return self._info_page(
-            "Request Terkirim",
-            (
-                f"Permintaan edit untuk "
-                f"{line.workorder_id.name} telah dikirim "
-                f"ke Leader {leader.name}."
-            ),
-        )
-
-    @http.route("/mes/edit/<int:line_id>/request-json", type="http", auth="user", methods=["POST"], csrf=False)
-    def mes_edit_request_json(self, line_id, **kwargs):
-        import json
-
-        line = request.env["mes.scan.approval.line"].sudo().browse(line_id)
-
-        if not line.exists():
-            return request.make_response(
-                json.dumps({"success": False, "message": "Line tidak ditemukan."}),
-                headers={"Content-Type": "application/json"}
-            )
-
-        if line.has_pending_edit:
-            return request.make_response(
-                json.dumps({"success": False, "message": "Request edit sudah diajukan dan sedang menunggu persetujuan."}),
-                headers={"Content-Type": "application/json"}
-            )
-
-        leader = line.leader_id.sudo()
-        if not leader:
-            return request.make_response(
-                json.dumps({"success": False, "message": "Work Order ini belum memiliki Leader."}),
-                headers={"Content-Type": "application/json"}
-            )
-
-        leader_user = request.env["mes.scan.approval.edit.request"].sudo()._find_leader_user(leader)
-        if not leader_user:
-            return request.make_response(
-                json.dumps({"success": False, "message": f"Leader {leader.name} tidak memiliki User Odoo."}),
-                headers={"Content-Type": "application/json"}
-            )
-
-        edit_request = request.env["mes.scan.approval.edit.request"].sudo().create({
-            "line_id": line.id,
-        })
-        edit_request._send_leader_notification()
-
-        return request.make_response(
-            json.dumps({
-                "success": True,
-                "message": f"Permintaan edit untuk {line.workorder_id.name} telah dikirim ke Leader {leader.name}."
-            }),
-            headers={"Content-Type": "application/json"}
-        )
+        form_view = self.env.ref("eran_custom.view_mes_scan_approval_form")
+        return {
+            "action": {
+                "type": "ir.actions.act_window",
+                "name": production.name,
+                "res_model": "mes.scan.approval",
+                "res_id": result.id,
+                "view_mode": "form",
+                "views": [(form_view.id, "form")],
+                "target": "current",
+                "context": {
+                    "mes_filter_production_id": production.id,
+                },
+            }
+        }
 
 class MesScanApprovalEditRequest(models.Model):
     _name = "mes.scan.approval.edit.request"
@@ -1862,33 +1406,6 @@ class MesScanApprovalEditRequest(models.Model):
     # LEADER USER
     # =========================================================
 
-    def _get_leader_user(self):
-        """
-        Mengambil User Odoo dari Leader.
-
-        Prioritas:
-        1. Employee.user_id
-        2. Fallback cari res.users berdasarkan nama Leader
-        tanpa memperhatikan kapitalisasi.
-
-        Contoh:
-            MUSTAMIR
-            Mustamir
-            mustamir
-
-        akan dianggap sama sementara.
-        """
-
-        self.ensure_one()
-
-        return self._find_leader_user(
-            self.leader_id
-        )
-
-        # =========================================================
-    # LEADER USER
-    # =========================================================
-
     @api.model
     def _find_leader_user(self, leader):
         """
@@ -1979,12 +1496,49 @@ class MesScanApprovalEditRequest(models.Model):
         self.ensure_one()
 
         return self._find_leader_user(
-            self.leader_id
+            self.sudo().leader_id
         )
         
     # =========================================================
     # REALTIME NOTIFICATION
     # =========================================================
+
+    def _notification_payload(self):
+        self.ensure_one()
+        rec = self.sudo()
+        line = rec.line_id
+        wo = rec.workorder_id
+        production = wo.production_id
+        return {
+            "request_id": rec.id,
+            "operator_name": rec.requested_by.name or "-",
+            "leader_name": rec.leader_id.name or "-",
+            "workorder_name": wo.name or "-",
+            "production_name": production.name or "-",
+            "product_name": wo.product_id.display_name or "-",
+            "current_qty": line.qty_actual,
+            "qty_target": line.qty_target or 0,
+            "state": rec.state,
+        }
+
+    @api.model
+    def get_pending_for_current_leader(self):
+        """Request waiting milik leader yang sedang login.
+
+        Dipakai saat leader baru login, karena notifikasi bus
+        tidak tersimpan kalau dia sedang offline.
+        """
+        user = self.env.user
+        requests = self.sudo().search(
+            [("state", "=", "waiting")],
+            order="create_date asc",
+        )
+        payloads = []
+        for rec in requests:
+            leader_user = rec._get_leader_user()
+            if leader_user and leader_user.id == user.id:
+                payloads.append(rec._notification_payload())
+        return payloads
 
     def _send_leader_notification(self):
         """
@@ -1994,12 +1548,13 @@ class MesScanApprovalEditRequest(models.Model):
 
         self.ensure_one()
 
-        leader_user = self._get_leader_user()
+        rec = self.sudo()
+        leader_user = rec._get_leader_user()
 
         if not leader_user:
             _logger.warning(
                 "MES EDIT REQUEST: Leader %s belum memiliki user Odoo.",
-                self.leader_id.name if self.leader_id else "-",
+                rec.leader_id.name if rec.leader_id else "-",
             )
             return
 
@@ -2010,51 +1565,7 @@ class MesScanApprovalEditRequest(models.Model):
             )
             return
 
-        line = self.line_id.sudo()
-        wo = self.workorder_id.sudo()
-        production = wo.production_id.sudo()
-
-        operator_name = (
-            self.requested_by.sudo().name
-            if self.requested_by
-            else "-"
-        )
-
-        leader_name = (
-            self.leader_id.sudo().name
-            if self.leader_id
-            else "-"
-        )
-
-        payload = {
-            "request_id": self.id,
-
-            "operator_name": operator_name,
-
-            "leader_name": leader_name,
-
-            "workorder_name": (
-                wo.name
-                if wo
-                else "-"
-            ),
-
-            "production_name": (
-                production.name
-                if production
-                else "-"
-            ),
-
-            "product_name": (
-                wo.product_id.sudo().display_name
-                if wo and wo.product_id
-                else "-"
-            ),
-
-            "current_qty": line.qty_actual,
-
-            "state": self.state,
-        }
+        payload = rec._notification_payload()
 
         # Odoo Bus realtime notification
         self.env["bus.bus"]._sendone(
@@ -2069,14 +1580,101 @@ class MesScanApprovalEditRequest(models.Model):
             leader_user.name,
             leader_user.id,
             leader_user.partner_id.id,
-            self.id,
+            rec.id,
         )
 
     # =========================================================
     # APPROVE
     # =========================================================
 
-    def action_approve(self):
+    def _check_leader_user(self):
+        self.ensure_one()
+        leader_user = self._get_leader_user()
+        if not leader_user:
+            raise UserError(
+                "Leader Work Order ini belum memiliki user Odoo."
+            )
+        if self.env.user.id != leader_user.id:
+            raise UserError(
+                "Anda bukan Leader dari Work Order ini. "
+                "Hanya Leader yang dapat memproses request edit."
+            )
+        return leader_user
+
+    def _memo_context(self, old_qty=None):
+        rec = self.sudo()
+        workorder = rec.workorder_id
+        production = workorder.production_id
+        request_dt = rec.approved_date or rec.create_date or fields.Datetime.now()
+        tz_record = rec.with_context(tz=self.env.user.tz or "Asia/Jakarta")
+        local_dt = fields.Datetime.context_timestamp(tz_record, request_dt)
+        return {
+            "operator_name": rec.requested_by.name or "-",
+            "leader_name": rec.approved_by.name or rec.leader_id.name or "-",
+            "workorder_name": workorder.name or "-",
+            "production_name": production.name or "-",
+            "product_name": workorder.product_id.display_name or "-",
+            "current_qty": old_qty if old_qty is not None else rec.current_qty or 0,
+            "new_qty": rec.new_qty or 0,
+            "date_str": local_dt.strftime("%d/%m/%Y %H:%M"),
+            "note": rec.note or "-",
+        }
+
+    def _get_admin_users(self):
+        admin_group = self.env.ref("base.group_system", raise_if_not_found=False)
+        if not admin_group:
+            return self.env["res.users"]
+        return admin_group.sudo().users.filtered(
+            lambda user: user.active and user.partner_id
+        )
+
+    def _apply_output_correction(self, new_qty):
+        """Ubah output MES, Work Order, dan MO sesuai input Leader."""
+        self.ensure_one()
+        rec = self.sudo()
+        line = rec.line_id
+        if not line:
+            raise UserError("Request edit tidak memiliki Work Order line.")
+
+        old_qty = line.qty_actual or 0.0
+        delta = new_qty - old_qty
+        rec.new_qty = new_qty
+        line.write({"qty_actual": new_qty})
+
+        wo = rec.workorder_id
+        if wo:
+            wo_vals = {"qty_producing": new_qty}
+            if "qty_produced" in wo._fields:
+                wo_vals["qty_produced"] = new_qty
+            wo.write(wo_vals)
+
+        production = wo.production_id if wo else False
+        if not production:
+            return old_qty
+
+        new_good = max((production.good_total or 0.0) + delta, 0.0)
+        prod_vals = {"good_total": new_good}
+        if "qty_producing" in production._fields:
+            prod_vals["qty_producing"] = new_good + (getattr(production, "ng_total", 0.0) or 0.0)
+        production.with_context(skip_good_total_check=True).write(prod_vals)
+
+        finish_moves = production.move_finished_ids.filtered(
+            lambda move: move.product_id.id == production.product_id.id
+            and move.state != "cancel"
+        )
+        if finish_moves:
+            try:
+                finish_moves._set_quantity_done(new_good)
+            except Exception:
+                _logger.warning(
+                    "MES EDIT REQUEST: gagal update qty finished move MO %s request_id=%s",
+                    production.name,
+                    rec.id,
+                    exc_info=True,
+                )
+        return old_qty
+
+    def action_approve(self, new_qty=None):
         self.ensure_one()
 
         if self.state != "waiting":
@@ -2084,31 +1682,28 @@ class MesScanApprovalEditRequest(models.Model):
                 "Request ini sudah diproses sebelumnya."
             )
 
-        leader_user = self._get_leader_user()
+        self._check_leader_user()
 
-        if not leader_user:
-            raise UserError(
-                "Leader Work Order ini belum memiliki user Odoo."
-            )
+        rec = self.sudo()
+        qty = rec.new_qty if new_qty is None else new_qty
+        try:
+            qty = float(qty or 0.0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        if qty <= 0:
+            raise UserError("Masukkan output terbaru yang benar (lebih dari 0).")
+        target = rec.line_id.qty_target or 0.0
+        if target and qty > target:
+            raise UserError("Output Melebihi Target")
 
-        if self.env.user != leader_user:
-            raise UserError(
-                "Anda bukan Leader dari Work Order ini. "
-                "Hanya Leader yang dapat menyetujui request edit."
-            )
+        old_qty = rec._apply_output_correction(qty)
 
-        wo = self.workorder_id.sudo()
-        production = wo.production_id.sudo() if wo else None
-        operator_name = self.requested_by.sudo().name if self.requested_by else "-"
-        leader_name = self.env.user.name or "-"
-        wo_name = wo.name if wo else "-"
-        mo_name = production.name if production else "-"
+        leader_name = self.env.user.name or rec.leader_id.name or "-"
+        operator_name = rec.requested_by.name or "-"
+        wo_name = rec.workorder_id.name or "-"
+        mo_name = rec.workorder_id.production_id.name or "-"
 
-        # =====================================================
-        # APPROVE REQUEST + TULIS CATATAN KE FIELD NOTE
-        # =====================================================
-
-        self.write({
+        rec.write({
             "state": "approved",
             "approved_by": self.env.user.id,
             "approved_date": fields.Datetime.now(),
@@ -2117,198 +1712,38 @@ class MesScanApprovalEditRequest(models.Model):
                 f"Operator  : {operator_name}\n"
                 f"MO        : {mo_name}\n"
                 f"WO        : {wo_name}\n"
+                f"Output lama: {old_qty}\n"
+                f"Output baru: {qty}\n"
                 f"Perlu konfirmasi memo ke IT."
             ),
         })
 
-        # =====================================================
-        # NOTIFIKASI KE OPERATOR
-        # =====================================================
-
-        self._send_operator_result_notification("approved")
-
+        rec._send_operator_result_notification("approved")
+        rec._notify_administrators_memo(old_qty=old_qty)
         return True
 
-        # =========================================================
-        # CONFIM MEMO IT
-        # =========================================================
+    def action_confirm_it_memo(self):
+        """Konfirmasi Leader untuk mengirim pengajuan memo ke admin."""
+        self.ensure_one()
+        self._check_leader_user()
+        rec = self.sudo()
+        if rec.state != "approved":
+            raise UserError("Request edit harus disetujui terlebih dahulu.")
+        if not rec.memo_notified:
+            rec._notify_administrators_memo()
+        return True
 
-        def action_confirm_it_memo(self):
-            """Konfirmasi Leader untuk mengirim pengajuan memo ke admin."""
-            self.ensure_one()
-
-            leader_user = self._get_leader_user()
-            if self.env.user != leader_user:
-                raise UserError("Hanya Leader Work Order yang dapat mengonfirmasi Memo IT.")
-            if self.state != "approved":
-                raise UserError("Request edit harus disetujui terlebih dahulu.")
-
-            if not self.memo_notified:
-                self._send_admin_memo_notification()
-                self.write({"memo_notified": True})
+    def action_create_it_note(self):
+        """Membuat Memo/Notes untuk Tim IT setelah Leader menyetujui."""
+        self.ensure_one()
+        rec = self.sudo()
+        if rec.state != "approved":
+            raise UserError(
+                "Request edit belum disetujui oleh Leader."
+            )
+        if rec.memo_notified:
             return True
-
-    # =========================================================
-    # CREATE NOTES MEMO
-    # =========================================================
-    
-        def action_create_it_note(self):
-            """Membuat Memo/Notes untuk Tim IT setelah admin mengonfirmasi."""
-
-            self.ensure_one()
-
-            if self.state != "approved":
-                raise UserError(
-                    "Request edit belum disetujui oleh Leader."
-                )
-
-            workorder = self.workorder_id.sudo()
-            production = (
-                workorder.production_id.sudo()
-                if workorder
-                else False
-            )
-
-            operator_name = (
-                self.requested_by.sudo().name
-                if self.requested_by
-                else "-"
-            )
-
-            leader_name = (
-                self.approved_by.sudo().name
-                if self.approved_by
-                else "-"
-            )
-
-            workorder_name = (
-                workorder.name
-                if workorder
-                else "-"
-            )
-
-            production_name = (
-                production.name
-                if production
-                else "-"
-            )
-
-            product_name = (
-                workorder.product_id.sudo().display_name
-                if workorder and workorder.product_id
-                else "-"
-            )
-
-            current_qty = self.current_qty or 0
-            new_qty = self.new_qty or 0
-
-            note_title = (
-                f"Memo Perubahan Data - "
-                f"{production_name} - {workorder_name}"
-            )
-
-            note_body = f"""
-            <h2>Pengajuan Perubahan Data Produksi</h2>
-
-            <p>
-                Terdapat pengajuan perubahan data produksi
-                yang telah disetujui oleh Leader.
-            </p>
-
-            <table style="border-collapse: collapse; width: 100%;">
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Operator
-                    </td>
-                    <td style="padding: 6px;">
-                        {operator_name}
-                    </td>
-                </tr>
-
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Leader
-                    </td>
-                    <td style="padding: 6px;">
-                        {leader_name}
-                    </td>
-                </tr>
-
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Manufacturing Order
-                    </td>
-                    <td style="padding: 6px;">
-                        {production_name}
-                    </td>
-                </tr>
-
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Work Order
-                    </td>
-                    <td style="padding: 6px;">
-                        {workorder_name}
-                    </td>
-                </tr>
-
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Product
-                    </td>
-                    <td style="padding: 6px;">
-                        {product_name}
-                    </td>
-                </tr>
-
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Quantity Saat Ini
-                    </td>
-                    <td style="padding: 6px;">
-                        {current_qty}
-                    </td>
-                </tr>
-
-                <tr>
-                    <td style="padding: 6px; font-weight: bold;">
-                        Quantity Perubahan
-                    </td>
-                    <td style="padding: 6px;">
-                        {new_qty}
-                    </td>
-                </tr>
-            </table>
-
-            <br/>
-
-            <p>
-                <strong>Status:</strong>
-                Disetujui oleh Leader dan dikirim ke Tim IT.
-            </p>
-
-            <p>
-                <strong>Catatan Request:</strong><br/>
-                {self.note or "-"}
-            </p>
-            """
-
-            note = self.env["note.note"].sudo().create({
-                "name": note_title,
-                "memo": note_body,
-            })
-
-            _logger.info(
-                "MES EDIT REQUEST: Notes dibuat untuk Tim IT "
-                "request_id=%s, note_id=%s",
-                self.id,
-                note.id,
-            )
-
-            return {
-                "note_id": note.id,
-                "note_name": note.name,
-            }
+        return rec._notify_administrators_memo()
 
     # =========================================================
     # REJECT
@@ -2330,34 +1765,15 @@ class MesScanApprovalEditRequest(models.Model):
         # 2. VALIDASI LEADER
         # -----------------------------------------------------
 
-        leader_user = self._get_leader_user()
+        self._check_leader_user()
 
-        if not leader_user:
-            raise UserError(
-                "Leader Work Order ini belum memiliki user Odoo."
-            )
-
-        if self.env.user != leader_user:
-            raise UserError(
-                "Anda bukan Leader dari Work Order ini. "
-                "Hanya Leader yang dapat menolak request edit."
-            )
-
-        # -----------------------------------------------------
-        # 3. SIMPAN REJECT
-        # -----------------------------------------------------
-
-        self.write({
+        self.sudo().write({
             "state": "rejected",
             "approved_by": self.env.user.id,
             "approved_date": fields.Datetime.now(),
         })
 
-        # -----------------------------------------------------
-        # 4. NOTIFIKASI OPERATOR
-        # -----------------------------------------------------
-
-        self._send_operator_result_notification(
+        self.sudo()._send_operator_result_notification(
             "rejected"
         )
 
@@ -2370,30 +1786,23 @@ class MesScanApprovalEditRequest(models.Model):
     def _send_operator_result_notification(self, result):
         """
         Kirim hasil approval/rejection kembali ke operator.
-
-        Ini optional untuk tahap sekarang, tapi gue pasang
-        sekalian supaya operator tahu request-nya sudah diproses.
         """
 
         self.ensure_one()
+        rec = self.sudo()
 
-        approval = self.line_id.sudo().approval_id.sudo()
+        approval = rec.line_id.approval_id
 
         if not approval or not approval.employee_id:
             return
 
-        # Akses employee harus sudo: tanpa itu Odoo dapat memakai model
-        # hr.employee.public yang tidak mengenal field custom barcode_id.
-        operator_employee = approval.employee_id.sudo()
-        operator_user = operator_employee.user_id.sudo()
+        operator_user = approval.employee_id.user_id
 
         if not operator_user or not operator_user.partner_id:
             return
 
-        # Work Order tidak dapat dibaca oleh semua akun Leader. Karena hanya
-        # dipakai sebagai isi pesan, gunakan akses internal untuk relasinya.
-        workorder_name = self.workorder_id.sudo().name or "-"
-        approver_name = self.approved_by.sudo().name or "-"
+        workorder_name = rec.workorder_id.name or "-"
+        approver_name = rec.approved_by.name or "-"
 
         if result == "approved":
             title = "✅ Edit Disetujui"
@@ -2408,11 +1817,11 @@ class MesScanApprovalEditRequest(models.Model):
                 f"ditolak oleh {approver_name}."
             )
 
-        self.env["bus.bus"]._sendone(
+        rec.env["bus.bus"]._sendone(
             operator_user.partner_id,
             "mes_edit_request_result",
             {
-                "request_id": self.id,
+                "request_id": rec.id,
                 "title": title,
                 "message": message,
                 "state": result,
@@ -2506,49 +1915,139 @@ class MesScanApprovalEditRequest(models.Model):
             self.id,
         )
 
-    def _send_admin_memo_notification(self):
-        """Kirim pengingat memo ke seluruh user administrator aktif."""
-
+    def _notify_administrators_memo(self, old_qty=None):
+        """Kirim notes + popup ke administrator setelah Leader setuju."""
         self.ensure_one()
-
-        admin_group = self.env.ref("base.group_system", raise_if_not_found=False)
-        admin_users = admin_group.sudo().users.filtered(
-            lambda user: user.active and user.partner_id
-        ) if admin_group else self.env["res.users"]
+        rec = self.sudo()
+        ctx = rec._memo_context(old_qty=old_qty)
+        admin_users = rec._get_admin_users()
 
         if not admin_users:
             _logger.warning(
                 "MES EDIT REQUEST: Tidak ada user admin aktif untuk request_id=%s",
-                self.id,
+                rec.id,
             )
-            return
+            return False
 
-        workorder = self.workorder_id.sudo()
-        production_name = workorder.production_id.sudo().name or "-"
-        workorder_name = workorder.name or "-"
+        message = (
+            f"MO {ctx['production_name']}, atas nama {ctx['operator_name']}, "
+            f"tanggal {ctx['date_str']}, Leader {ctx['leader_name']} "
+            f"mengubah output dari {ctx['current_qty']} menjadi {ctx['new_qty']} "
+            "dan akan membuat memo terkait perubahan data output."
+        )
+        note_title = (
+            f"Memo Perubahan Data - {ctx['production_name']} - {ctx['workorder_name']}"
+        )
+        note_body = f"""
+            <h2>Pengajuan Perubahan Data Produksi</h2>
+            <p>{message}</p>
+            <table style="border-collapse: collapse; width: 100%;">
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Operator</td>
+                    <td style="padding: 6px;">{ctx['operator_name']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Leader</td>
+                    <td style="padding: 6px;">{ctx['leader_name']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Tanggal</td>
+                    <td style="padding: 6px;">{ctx['date_str']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Manufacturing Order</td>
+                    <td style="padding: 6px;">{ctx['production_name']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Work Order</td>
+                    <td style="padding: 6px;">{ctx['workorder_name']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Product</td>
+                    <td style="padding: 6px;">{ctx['product_name']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Output Lama</td>
+                    <td style="padding: 6px;">{ctx['current_qty']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; font-weight: bold;">Output Baru</td>
+                    <td style="padding: 6px;">{ctx['new_qty']}</td>
+                </tr>
+            </table>
+            <p><strong>Status:</strong> Disetujui oleh Leader. Menunggu memo perubahan data ke Tim IT.</p>
+        """
         payload = {
-            "request_id": self.id,
+            "request_id": rec.id,
             "title": "Pengajuan Memo Perubahan Data",
-            "message": (
-                "Ada pengajuan memo dari Produksi terkait perubahan data "
-                f"(MO: {production_name}; Work Order: {workorder_name})."
-            ),
+            "message": message,
+            "operator_name": ctx["operator_name"],
+            "leader_name": ctx["leader_name"],
+            "production_name": ctx["production_name"],
+            "workorder_name": ctx["workorder_name"],
+            "product_name": ctx["product_name"],
+            "date_str": ctx["date_str"],
+            "current_qty": ctx["current_qty"],
+            "new_qty": ctx["new_qty"],
         }
 
         for admin_user in admin_users:
-            self.env["bus.bus"]._sendone(
+            rec.env["bus.bus"]._sendone(
                 admin_user.partner_id,
                 "mes_edit_request_admin_memo",
                 payload,
             )
 
-        _logger.info(
-            "MES EDIT REQUEST: notifikasi memo dikirim ke %s admin, request_id=%s",
-            len(admin_users),
-            self.id,
+        email_from = (
+            self.env.user.partner_id.email_formatted
+            or self.env.company.partner_id.email_formatted
+            or "noreply@localhost"
         )
+        try:
+            rec.env["mail.thread"].message_notify(
+                partner_ids=admin_users.mapped("partner_id").ids,
+                subject=note_title,
+                body=f"<p>{message}</p>",
+                model="mes.scan.approval.edit.request",
+                res_id=rec.id,
+                email_from=email_from,
+            )
+        except Exception:
+            _logger.exception(
+                "MES EDIT REQUEST: gagal kirim inbox admin, request_id=%s",
+                rec.id,
+            )
 
-class MesEditRequest(models.Model):
-    _name = "mes.edit.request"
-    _description = "MES Edit Request"
-    _inherit = ["mail.thread", "mail.activity.mixin"]  # ← ini harus ada
+        created_note = False
+        if "note.note" in rec.env:
+            Note = rec.env["note.note"]
+            created_notes = Note.browse()
+            for admin_user in admin_users:
+                stage = rec.env["note.stage"].search(
+                    [("user_id", "=", admin_user.id)],
+                    limit=1,
+                )
+                vals = {
+                    "name": note_title,
+                    "user_id": admin_user.id,
+                    "memo": note_body,
+                }
+                if stage:
+                    vals["stage_ids"] = [(6, 0, [stage.id])]
+                created_notes |= Note.create(vals)
+            created_note = created_notes[:1]
+
+        rec.write({"memo_notified": True})
+        _logger.info(
+            "MES EDIT REQUEST: notes/notifikasi admin dikirim ke %s admin, request_id=%s",
+            len(admin_users),
+            rec.id,
+        )
+        return {
+            "note_id": created_note.id if created_note else False,
+            "note_name": created_note.name if created_note else note_title,
+        }
+
+    def _send_admin_memo_notification(self):
+        """Alias lama: kirim notes dan popup ke administrator."""
+        return self._notify_administrators_memo()
