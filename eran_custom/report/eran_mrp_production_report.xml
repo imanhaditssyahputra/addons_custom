@@ -76,29 +76,30 @@
             <div class="page" style="font-family:DejaVu Sans,Arial,sans-serif;font-size:11px;color:#000;">
                 <t t-set="wo" t-value="o.workorder_ids[:1]"/>
                 <style>
-                    .eran-wo-box { border:1.5px solid #000; padding:10px 12px; margin-bottom:16px; }
-                    .eran-wo-title { text-align:center; font-size:20px; font-weight:700; letter-spacing:2px; margin:0 0 10px 0; }
+                    .page { page-break-after: auto !important; }
+                    .eran-wo-box { border:1.5px solid #000; padding:6px 8px; margin-bottom:10px; page-break-inside: avoid; }
+                    .eran-wo-title { text-align:center; font-size:16px; font-weight:700; letter-spacing:1px; margin:0 0 6px 0; }
                     .eran-wo-head td { border:none; padding:0; vertical-align:middle; }
-                    .eran-barcode { display:inline-block; padding:2px 4px 2px 8px; }
-                    .eran-info td { border:none; padding:2px 4px; vertical-align:top; font-size:11px; }
+                    .eran-barcode { display:inline-block; padding:0 2px 0 6px; }
+                    .eran-info td { border:none; padding:1px 4px; vertical-align:top; font-size:10px; }
                     .eran-info .lbl { width:110px; }
                     .eran-info .sep { width:10px; }
-                    .eran-grid { width:100%; border-collapse:collapse; margin-top:10px; }
-                    .eran-grid th, .eran-grid td { border:1px solid #000; padding:4px 6px; }
+                    .eran-grid { width:100%; border-collapse:collapse; margin-top:6px; }
+                    .eran-grid th, .eran-grid td { border:1px solid #000; padding:3px 5px; }
                     .eran-grid th { text-align:center; font-size:10px; }
                 </style>
 
                 <!-- WORK ORDER -->
                 <div class="eran-wo-box">
                     <div class="eran-wo-title">WORK ORDER</div>
-                    <table style="width:100%;margin-bottom:6px;">
+                    <table style="width:100%;margin-bottom:4px;">
                         <tr class="eran-wo-head">
-                            <td style="width:70%;font-size:16px;font-weight:700;white-space:nowrap;padding-right:12px;">
+                            <td style="width:78%;font-size:15px;font-weight:700;white-space:nowrap;padding-right:8px;">
                                 <span t-field="o.name"/>
                             </td>
-                            <td style="width:30%;text-align:right;">
+                            <td style="width:22%;text-align:right;">
                                 <div class="eran-barcode">
-                                    <div t-esc="o.name" t-options="{'widget': 'barcode', 'symbology': 'QR', 'width': 200, 'height': 200, 'quiet': 1, 'img_style': 'width:80px;height:80px;'}"/>
+                                    <div t-esc="o.name" t-options="{'widget': 'barcode', 'symbology': 'QR', 'width': 160, 'height': 160, 'quiet': 1, 'img_style': 'width:64px;height:64px;'}"/>
                                 </div>
                             </td>
                         </tr>
@@ -144,74 +145,6 @@
                                 <td style="text-align:center;"><span t-esc="o.qty_producing or o.qty_produced or 0"/></td>
                                 <td style="text-align:center;"><span t-field="o.product_uom_id"/></td>
                                 <td></td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-
-                <!-- REQUEST MATERIAL -->
-                <div class="eran-wo-box">
-                    <div class="eran-wo-title">REQUEST MATERIAL</div>
-                    <table style="width:100%;margin-bottom:6px;">
-                        <tr class="eran-wo-head">
-                            <td style="width:70%;font-size:16px;font-weight:700;white-space:nowrap;padding-right:12px;">
-                                <span t-field="o.name"/>
-                            </td>
-                            <td style="width:30%;text-align:right;">
-                                <div class="eran-barcode">
-                                    <div t-esc="o.name" t-options="{'widget': 'barcode', 'symbology': 'QR', 'width': 200, 'height': 200, 'quiet': 1, 'img_style': 'width:80px;height:80px;'}"/>
-                                </div>
-                            </td>
-                        </tr>
-                    </table>
-                    <table class="eran-info" style="width:100%;margin-bottom:6px;">
-                        <tr>
-                            <td class="lbl">Production Date</td><td class="sep">:</td>
-                            <td><span t-field="o.date_planned_start"/></td>
-                            <td class="lbl">Leader</td><td class="sep">:</td>
-                            <td><span t-field="o.leader_id"/></td>
-                        </tr>
-                        <tr>
-                            <td class="lbl">Shift</td><td class="sep">:</td>
-                            <td><span t-field="o.shift_id"/></td>
-                            <td class="lbl">Operator</td><td class="sep">:</td>
-                            <td><span t-field="o.operator_id"/></td>
-                        </tr>
-                        <tr>
-                            <td class="lbl" style="vertical-align:top;">Production</td><td class="sep" style="vertical-align:top;">:</td>
-                            <td colspan="4">
-                                <span t-field="o.product_id.display_name"/><br/>
-                                <t t-foreach="o.move_raw_ids" t-as="raw">
-                                    <span t-field="raw.product_id.display_name"/><br/>
-                                </t>
-                            </td>
-                        </tr>
-                        <tr>
-                            <td class="lbl">Machine</td><td class="sep">:</td>
-                            <td colspan="4"><span t-field="wo.workcenter_id"/></td>
-                        </tr>
-                    </table>
-                    <table class="eran-grid">
-                        <thead>
-                            <tr>
-                                <th style="width:8%;">No</th>
-                                <th>Material Description</th>
-                                <th style="width:14%;">Request Qty</th>
-                                <th style="width:14%;">Actual Qty</th>
-                                <th style="width:10%;">UoM</th>
-                                <th style="width:12%;">Remark</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <t t-set="nomor" t-value="1"/>
-                            <tr t-foreach="o.move_raw_ids" t-as="raw">
-                                <td style="text-align:center;"><span t-esc="nomor"/></td>
-                                <td><span t-field="raw.product_id.display_name"/></td>
-                                <td style="text-align:center;"><span t-field="raw.product_uom_qty"/></td>
-                                <td style="text-align:center;"><span t-field="raw.quantity_done"/></td>
-                                <td style="text-align:center;"><span t-field="raw.product_uom"/></td>
-                                <td></td>
-                                <t t-set="nomor" t-value="nomor + 1"/>
                             </tr>
                         </tbody>
                     </table>
