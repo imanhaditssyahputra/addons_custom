@@ -1376,6 +1376,11 @@ class MesScanApprovalEditRequest(models.Model):
         string="Quantity Perubahan",
     )
 
+    previous_qty = fields.Float(
+        string="Output Sebelum Edit",
+        readonly=True,
+    )
+
     state = fields.Selection([
         ("waiting", "Menunggu Persetujuan"),
         ("approved", "Disetujui oleh Leader"),
@@ -1614,7 +1619,7 @@ class MesScanApprovalEditRequest(models.Model):
             "workorder_name": workorder.name or "-",
             "production_name": production.name or "-",
             "product_name": workorder.product_id.display_name or "-",
-            "current_qty": old_qty if old_qty is not None else rec.current_qty or 0,
+            "current_qty": old_qty if old_qty is not None else rec.previous_qty or rec.current_qty or 0,
             "new_qty": rec.new_qty or 0,
             "date_str": local_dt.strftime("%d/%m/%Y %H:%M"),
             "note": rec.note or "-",
@@ -1627,6 +1632,37 @@ class MesScanApprovalEditRequest(models.Model):
         return admin_group.sudo().users.filtered(
             lambda user: user.active and user.partner_id
         )
+
+    def _get_memo_users(self):
+        """Hanya Administrator dan IT yang terima notes/notif memo."""
+        Users = self.env["res.users"].sudo()
+        memo_users = Users.browse()
+        admin = self.env.ref("base.user_admin", raise_if_not_found=False)
+        if admin and admin.active and admin.partner_id:
+            memo_users |= admin
+        named = Users.search([
+            ("active", "=", True),
+            ("share", "=", False),
+            "|", "|", "|", "|",
+            ("login", "in", ["admin", "administrator", "it"]),
+            ("name", "=ilike", "Administrator"),
+            ("name", "=ilike", "Admin"),
+            ("name", "=ilike", "IT"),
+            ("name", "=ilike", "IT %"),
+        ])
+        memo_users |= named.filtered(lambda u: u.partner_id)
+        it_employees = self.env["hr.employee"].sudo().search([
+            "|", "|",
+            ("department_id.name", "ilike", "IT"),
+            ("job_id.name", "ilike", "IT"),
+            ("name", "=ilike", "IT"),
+        ])
+        memo_users |= it_employees.mapped("user_id").filtered(
+            lambda u: u.active and u.partner_id
+        )
+        if not memo_users:
+            return self._get_admin_users()
+        return memo_users
 
     def _apply_output_correction(self, new_qty):
         """Ubah output MES, Work Order, dan MO sesuai input Leader."""
@@ -1653,9 +1689,10 @@ class MesScanApprovalEditRequest(models.Model):
             return old_qty
 
         new_good = max((production.good_total or 0.0) + delta, 0.0)
+        ng_total = getattr(production, "ng_total", 0.0) or 0.0
         prod_vals = {"good_total": new_good}
         if "qty_producing" in production._fields:
-            prod_vals["qty_producing"] = new_good + (getattr(production, "ng_total", 0.0) or 0.0)
+            prod_vals["qty_producing"] = new_good + ng_total
         production.with_context(skip_good_total_check=True).write(prod_vals)
 
         finish_moves = production.move_finished_ids.filtered(
@@ -1664,7 +1701,7 @@ class MesScanApprovalEditRequest(models.Model):
         )
         if finish_moves:
             try:
-                finish_moves._set_quantity_done(new_good)
+                finish_moves.with_context(skip_good_total_check=True)._set_quantity_done(new_good)
             except Exception:
                 _logger.warning(
                     "MES EDIT REQUEST: gagal update qty finished move MO %s request_id=%s",
@@ -1672,6 +1709,17 @@ class MesScanApprovalEditRequest(models.Model):
                     rec.id,
                     exc_info=True,
                 )
+            for move in finish_moves:
+                lines = move.move_line_ids.filtered(lambda ml: ml.state != "cancel")
+                if len(lines) == 1:
+                    try:
+                        lines.qty_done = new_good
+                    except Exception:
+                        _logger.warning(
+                            "MES EDIT REQUEST: gagal update move line MO %s",
+                            production.name,
+                            exc_info=True,
+                        )
         return old_qty
 
     def action_approve(self, new_qty=None):
@@ -1707,6 +1755,7 @@ class MesScanApprovalEditRequest(models.Model):
             "state": "approved",
             "approved_by": self.env.user.id,
             "approved_date": fields.Datetime.now(),
+            "previous_qty": old_qty,
             "note": (
                 f"✅ Disetujui oleh Leader: {leader_name}\n"
                 f"Operator  : {operator_name}\n"
@@ -1719,7 +1768,6 @@ class MesScanApprovalEditRequest(models.Model):
         })
 
         rec._send_operator_result_notification("approved")
-        rec._notify_administrators_memo(old_qty=old_qty)
         return True
 
     def action_confirm_it_memo(self):
@@ -1730,7 +1778,7 @@ class MesScanApprovalEditRequest(models.Model):
         if rec.state != "approved":
             raise UserError("Request edit harus disetujui terlebih dahulu.")
         if not rec.memo_notified:
-            rec._notify_administrators_memo()
+            rec._notify_administrators_memo(old_qty=rec.previous_qty)
         return True
 
     def action_create_it_note(self):
@@ -1743,7 +1791,7 @@ class MesScanApprovalEditRequest(models.Model):
             )
         if rec.memo_notified:
             return True
-        return rec._notify_administrators_memo()
+        return rec._notify_administrators_memo(old_qty=rec.previous_qty)
 
     # =========================================================
     # REJECT
@@ -1916,15 +1964,15 @@ class MesScanApprovalEditRequest(models.Model):
         )
 
     def _notify_administrators_memo(self, old_qty=None):
-        """Kirim notes + popup ke administrator setelah Leader setuju."""
+        """Kirim notes + popup ke Administrator dan IT saja."""
         self.ensure_one()
         rec = self.sudo()
         ctx = rec._memo_context(old_qty=old_qty)
-        admin_users = rec._get_admin_users()
+        memo_users = rec._get_memo_users()
 
-        if not admin_users:
+        if not memo_users:
             _logger.warning(
-                "MES EDIT REQUEST: Tidak ada user admin aktif untuk request_id=%s",
+                "MES EDIT REQUEST: Tidak ada user Admin/IT untuk request_id=%s",
                 rec.id,
             )
             return False
@@ -1975,7 +2023,7 @@ class MesScanApprovalEditRequest(models.Model):
                     <td style="padding: 6px;">{ctx['new_qty']}</td>
                 </tr>
             </table>
-            <p><strong>Status:</strong> Disetujui oleh Leader. Menunggu memo perubahan data ke Tim IT.</p>
+            <p><strong>Status:</strong> Disetujui oleh Leader. Memo perubahan data untuk Admin dan IT.</p>
         """
         payload = {
             "request_id": rec.id,
@@ -1991,9 +2039,9 @@ class MesScanApprovalEditRequest(models.Model):
             "new_qty": ctx["new_qty"],
         }
 
-        for admin_user in admin_users:
+        for memo_user in memo_users:
             rec.env["bus.bus"]._sendone(
-                admin_user.partner_id,
+                memo_user.partner_id,
                 "mes_edit_request_admin_memo",
                 payload,
             )
@@ -2005,7 +2053,7 @@ class MesScanApprovalEditRequest(models.Model):
         )
         try:
             rec.env["mail.thread"].message_notify(
-                partner_ids=admin_users.mapped("partner_id").ids,
+                partner_ids=memo_users.mapped("partner_id").ids,
                 subject=note_title,
                 body=f"<p>{message}</p>",
                 model="mes.scan.approval.edit.request",
@@ -2014,7 +2062,7 @@ class MesScanApprovalEditRequest(models.Model):
             )
         except Exception:
             _logger.exception(
-                "MES EDIT REQUEST: gagal kirim inbox admin, request_id=%s",
+                "MES EDIT REQUEST: gagal kirim inbox Admin/IT, request_id=%s",
                 rec.id,
             )
 
@@ -2022,14 +2070,14 @@ class MesScanApprovalEditRequest(models.Model):
         if "note.note" in rec.env:
             Note = rec.env["note.note"]
             created_notes = Note.browse()
-            for admin_user in admin_users:
+            for memo_user in memo_users:
                 stage = rec.env["note.stage"].search(
-                    [("user_id", "=", admin_user.id)],
+                    [("user_id", "=", memo_user.id)],
                     limit=1,
                 )
                 vals = {
                     "name": note_title,
-                    "user_id": admin_user.id,
+                    "user_id": memo_user.id,
                     "memo": note_body,
                 }
                 if stage:
@@ -2039,8 +2087,8 @@ class MesScanApprovalEditRequest(models.Model):
 
         rec.write({"memo_notified": True})
         _logger.info(
-            "MES EDIT REQUEST: notes/notifikasi admin dikirim ke %s admin, request_id=%s",
-            len(admin_users),
+            "MES EDIT REQUEST: notes/notifikasi dikirim ke Admin/IT (%s user), request_id=%s",
+            len(memo_users),
             rec.id,
         )
         return {
