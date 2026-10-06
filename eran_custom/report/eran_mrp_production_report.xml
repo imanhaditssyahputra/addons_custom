@@ -151,6 +151,10 @@
                 </div>
             </div>
         </xpath>
+
+        <xpath expr="(//div[@class='page'])[2]" position="replace">
+            <!-- replace request material hide -->
+        </xpath>
     </template>
 
     <template id="eran_report_mrp_workorder_mo_barcode" inherit_id="mrp.report_mrp_workorder">
