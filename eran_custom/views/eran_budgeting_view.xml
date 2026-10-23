@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_budgeting_tree" model="ir.ui.view">
+        <field name="name">budgeting.tree</field>
+        <field name="model">eran.budgeting</field>
+        <field name="arch" type="xml">
+            <tree string="Budgeting">
+                <field name="budgeting_name"/>
+                <field name="saldo_awal"/>
+                <field name="date_budget"/>
+                <field name="amount"/>
+            </tree>
+        </field>
+    </record>
+    <record id="view_budgeting_form" model="ir.ui.view">
+        <field name="name">budgeting.form</field>
+        <field name="model">eran.budgeting</field>
+        <field name="arch" type="xml">
+            <form string="Budgeting">
+                <sheet>
+                    <group>
+                        <field name="budgeting_name"/>
+                        <field name="department_id"/>
+                        <field name="date_budget"/>
+                        <field name="saldo_awal"/>
+                        <field name="amount"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_budgeting" model="ir.actions.act_window">
+        <field name="name">Budgeting</field>
+        <field name="res_model">eran.budgeting</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+    <menuitem id="menu_budgeting" 
+          name="Budgeting" 
+          parent="account.menu_finance_entries_management" 
+          action="action_budgeting" 
+          sequence="30"/>
+</odoo>

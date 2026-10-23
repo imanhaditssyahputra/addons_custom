@@ -95,6 +95,7 @@
         'views/eran_attendance_view.xml',
         'views/eran_attendance_barcode_view.xml',
         'views/eran_edit_request_view.xml',
+        'views/eran_budgeting_view.xml',
 
         #wizard
         'wizard/eran_quotation_loi_wiz_view.xml',

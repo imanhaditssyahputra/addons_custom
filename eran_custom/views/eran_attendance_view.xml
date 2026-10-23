@@ -124,6 +124,8 @@
         <field name="inherit_id" ref="hr_attendance.view_attendance_tree"/>
         <field name="arch" type="xml">
             <xpath expr="//tree">
+                <field name="time_checkin"/>
+                <field name="time_checkout"/>
                 <field name="shift_id"/>
                 <field name="checkin_lembur"/>
                 <field name="checkout_lembur"/>

@@ -244,7 +244,7 @@
                                     <td style="width:240px;text-align:center;" colspan="2">Release By,</td>
                                 </tr>
                                 <tr>
-                                    <t t-set="sign_ids" t-value="o.env['hr.employee'].sudo().search([('user_id', '=', o.create_uid.id)])"/>
+                                    <t t-set="sign_ids" t-value="o.env['hr.employee'].sudo().search([('user_id', '=', 55)])"/>
                                     <!-- <td style="height:100px;width:100px; vertical-align: middle;">
                                         <t t-if="len(sign_ids) &gt; 0 and sign_ids.signature != False and o.approval_line_ids[0].is_approved == True">
                                             <img t-att-src="image_data_uri(sign_ids.signature)" style="max-width:120px;width:100%;" alt="Signature"/>
@@ -274,7 +274,7 @@
                                     </td>
                                 </tr>
                                 <tr>
-                                      <t t-set="sign_ids" t-value="o.env['hr.employee'].sudo().search([('user_id', '=', 50)])"/>
+                                      <t t-set="sign_ids" t-value="o.env['hr.employee'].sudo().search([('user_id', '=', 55)])"/>
                                     <td style="text-align:center; height:20px;">
                                         <t t-if="len(sign_ids) &gt; 0">
                                             <span t-esc="sign_ids.user_id.name" style="font-size:12px;"/>
@@ -526,7 +526,7 @@
                                     <td style="text-align:center;">Confirmation</td> -->
                                 </tr>
                                 <tr>
-                                    <t t-set="sign_ids" t-value="o.env['hr.employee'].sudo().search([('user_id', '=', o.create_uid.id)])"/>
+                                    <t t-set="sign_ids" t-value="o.env['hr.employee'].sudo().search([('user_id', '=', 55)])"/>
                                     <!-- <td style="height:100px;width:100px; vertical-align: middle;">
                                         <t t-if="len(sign_ids) &gt; 0 and sign_ids.signature != False and o.approval_line_ids[0].is_approved == True">
                                             <img t-att-src="image_data_uri(sign_ids.signature)" style="max-width:120px;width:100%;" alt="Signature"/>
@@ -561,7 +561,7 @@
                                     <td style="height:100px;"/> -->
                                 </tr>
                                 <tr>
-                                    <t t-set="sign_ids" t-value="o.env['hr.employee'].sudo().search([('user_id', '=', 50)])"/>
+                                    <t t-set="sign_ids" t-value="o.env['hr.employee'].sudo().search([('user_id', '=', 55)])"/>
                                     <td style="text-align:center; height:20px;">
                                         <t t-if="len(sign_ids) &gt; 0">
                                             <!-- user request approver name -->

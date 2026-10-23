@@ -3,6 +3,8 @@ try:
 except ImportError:
     ZK = None
 import logging
+
+from numpy import record
 from odoo import api, fields, models, tools, _
 from odoo.exceptions import ValidationError, UserError
 from odoo.tools import DEFAULT_SERVER_DATETIME_FORMAT
@@ -64,6 +66,11 @@ class EranAttendanceMachineConfig(models.Model):
             })
         return True
 
+    def action_reconnect(self):
+        """ Fungsi untuk mencoba koneksi ulang ke mesin X902 """
+        self.action_test_connection()
+
+
     def action_download_data(self):
         
         user_tz = pytz.timezone(self.env.user.tz or 'Asia/Jakarta')
@@ -71,7 +78,12 @@ class EranAttendanceMachineConfig(models.Model):
         """ Fungsi untuk mendownload data log dari mesin X902 dan simpan ke model log transaksi """
         if ZK is None:
             raise UserError(_("Library pyzk (zk) belum terinstall. Install dengan: pip install pyzk"))
-        for record in self:
+        records = self
+        if not records:
+            records = self.env['eran.attendance.machine.config'].search([
+                ('connection_status', '=', 'online')
+            ])
+        for record in records:
             if record.connection_status != 'online':
                 raise UserError(_("Mesin tidak dalam status online. Mohon tes koneksi terlebih dahulu!"))
             
@@ -112,6 +124,8 @@ class eranAttendance(models.Model):
     _inherit = 'hr.attendance'
 
     # Tambahan field untuk menyimpan info shift (optional)
+    time_checkin = fields.Char('Jam Masuk', compute='_compute_time_checkin_checkout', store=True)
+    time_checkout = fields.Char('Jam Pulang', compute='_compute_time_checkin_checkout', store=True)
     shift_id = fields.Many2one('eran.master.shift', string="Shift", readonly=True)
     overtime_id = fields.Many2one(
         'eran.hr.overtime', 
@@ -353,6 +367,23 @@ class eranAttendance(models.Model):
             else:
                 rec.total_lembur = 0
   
+    @api.depends('check_in', 'check_out')
+    def _compute_time_checkin_checkout(self):
+        local_tz = pytz.timezone('Asia/Jakarta')
+        for rec in self:
+            if rec.check_in:
+                # Ubah timezone dari UTC ke Asia/Jakarta
+                local_checkin = pytz.utc.localize(rec.check_in).astimezone(local_tz)
+                rec.time_checkin = local_checkin.strftime('%H:%M')
+            else:
+                rec.time_checkin = False
+
+            if rec.check_out:
+                # Ubah timezone dari UTC ke Asia/Jakarta
+                local_checkout = pytz.utc.localize(rec.check_out).astimezone(local_tz)
+                rec.time_checkout = local_checkout.strftime('%H:%M')
+            else:
+                rec.time_checkout = False
 
 class eranAttendanceLog(models.Model):
     _name = 'eran.attendance.log.transaction'

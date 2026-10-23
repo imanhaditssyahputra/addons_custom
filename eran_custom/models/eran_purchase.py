@@ -44,6 +44,14 @@ class PurchaseOrder(models.Model):
     ], string='Lock State', compute="_get_lock_state", store=True)
 
     dpp = fields.Float(string="DPP", compute='_compute_dpp', store=True)
+    # ..... conversi kurs $ ......
+    amount_convert_order_idr = fields.Float(string="Amount convert Order IDR", compute="_compute_due_date_and_payments",  store=True)
+    amount_convert_receipt_idr = fields.Float(string="Amount convert Receipt IDR", compute="_compute_due_date_and_payments",  store=True)
+    due_date_invoice = fields.Datetime(
+        string="Due Date Invoice", 
+        compute="_compute_due_date_and_payments", 
+        store=True
+    )
 
 
     def action_update_qty_received(self):
@@ -386,6 +394,44 @@ class PurchaseOrder(models.Model):
             invoices += invoice
 
         return invoices
+
+    @api.depends('invoice_ids', 'invoice_ids.state', 'invoice_ids.invoice_date_due', 'invoice_ids.payment_state')
+    def _compute_due_date_and_payments(self):
+        for line in self:
+            # === LOGIKA AWAL / JANGAN DIUBAH ===
+            all_bills = self.env['account.move'].search([
+                ('move_type', '=', 'in_invoice'),
+                ('state', '!=', 'cancel'),
+                ('invoice_line_ids.purchase_order_id', '=', line.id) # Diperbaiki dari line.order_id.id menjadi line.id
+            ])
+                
+            # Kumpulkan semua tanggal jatuh tempo yang valid
+            valid_due_dates = [bill.invoice_date_due for bill in all_bills if bill.invoice_date_due]
+                
+            if valid_due_dates:
+                # Mengambil jatuh tempo paling terdekat/awal
+                line.due_date_invoice = max(valid_due_dates)
+            else:
+                line.due_date_invoice = False
+
+            # === LOGIKA TAMBAHAN: MENGHITUNG TOTAL PAYMENT DARI BANYAK INVOICE ===
+            total_paid = 0.0
+            
+            for bill in all_bills:
+                # Odoo menyimpan data rekonsiliasi pembayaran di field amount_total_signed / payment widget
+                # Cara paling aman mengambil nilai bayar murni (termasuk parsial) adalah menjumlahkan baris pembayaran yang ter-reconcile
+                reconciled_lines = bill.line_ids.filtered(lambda l: l.account_id.account_type == 'asset_receivable' or l.account_id.account_type == 'liability_payable')
+                
+                for r_line in reconciled_lines:
+                    # Mencari payment lines yang mencocokkan invoice ini
+                    for partial in r_line.matched_debit_ids:
+                        total_paid += partial.amount
+                    for partial in r_line.matched_credit_ids:
+                        total_paid += partial.amount
+            
+            # Memasukkan hasil penjumlahan pembayaran ke kedua field IDR Anda
+            line.amount_convert_order_idr = total_paid
+            line.amount_convert_receipt_idr = total_paid
         
     
 class PurchaseOrderLine(models.Model):
@@ -445,6 +491,7 @@ class PurchaseOrderLine(models.Model):
     received_convert = fields.Float(string="Received Convert", compute="_compute_received_convert", store=True)
     origin = fields.Char(string='Source Document', related='order_id.origin', store=True)
     request_date = fields.Date(string='Request Date',related="purchase_request_id.date_start", store=True)
+    department_id = fields.Many2one('hr.department', string='Department', related="purchase_request_id.department_id", store=True)
     # ..... conversi kurs $ ......
     amount_convert_order_idr = fields.Float(string="Amount convert Order IDR", compute="_compute_amount_convert_idr", store=True)
     amount_convert_receipt_idr = fields.Float(string="Amount convert Receipt IDR", compute="_compute_amount_convert_idr", store=True)

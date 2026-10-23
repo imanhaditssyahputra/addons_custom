@@ -38,3 +38,4 @@ from . import eran_pica
 from . import eran_account_asset
 from . import eran_stock_scarp
 from . import eran_attendance_barcode
+from . import eran_budgeting
