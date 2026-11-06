@@ -13,6 +13,7 @@ class EranProductTemplate(models.Model):
     is_global_discount = fields.Boolean(string="Is Global Discount ?") 
     product_location_ids = fields.Many2many('stock.location', string='Product Location')
     category_group_id = fields.Many2one('eran.category.group', string='Category Group')
+    product_group_id = fields.Many2one('eran.product.group', string='Product Group')
     additional_qty_2 = fields.Float(string="Alternative UoM 2", default=1.0, digits=(10, 5))
     additional_uom_id_2 = fields.Many2one('uom.uom', string="UoM 2")
     short_string = fields.Boolean(string="Short String")

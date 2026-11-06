@@ -13,4 +13,11 @@ class EranCategoryGroup(models.Model):
 
     name = fields.Char(string='Name')
 
+class EranProductGroup(models.Model):
+    _name = "eran.product.group"
+    _description = "Eran Product Group"
+
+
+    name = fields.Char(string='Name')
+
 

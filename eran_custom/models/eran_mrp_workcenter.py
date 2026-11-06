@@ -157,8 +157,6 @@ class MrpWorkcenterProductivity(models.Model):
 
             record.real_duration = total_duration
 
-
-
 class EranWorkCenterOverhead(models.Model):
     _name = 'eran.work.center.overhead'
     _description = 'Eran Work Center Overhead'

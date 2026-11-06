@@ -395,6 +395,14 @@
         sequence="110"
     />
 
+    <menuitem
+        id="eran_product_group_menu"
+        name="Product Group"
+        action="eran_product_group_action"
+        parent="stock.menu_stock_inventory_control"
+        sequence="120"
+    />
+
     <menuitem id="dsn_menu_mrp_non_material_planning" name="MRP Non Material" parent="mrp_mps.mrp_mps_menu_planning" action="eran_action_mrp_non_material" sequence="45"/>
 
     <menuitem

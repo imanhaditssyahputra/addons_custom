@@ -45,6 +45,7 @@
 "access_eran_cost_vendor_pricelist","access_eran_cost_vendor_pricelist","model_eran_cost_vendor_pricelist","base.group_user",1,1,1,1
 "access_eran_cost_vendor_pricelist_line","access_eran_cost_vendor_pricelist_line","model_eran_cost_vendor_pricelist_line","base.group_user",1,1,1,1
 "access_eran_category_group","access_eran_category_group","model_eran_category_group","base.group_user",1,1,1,1
+"access_eran_product_group","access_eran_product_group","model_eran_product_group","base.group_user",1,1,1,1
 "access_eran_demand_order_forecast","access_eran_demand_order_forecast","model_eran_demand_order_forecast","base.group_user",1,1,1,1
 "access_eran_part_defect_type","access_eran_part_defect_type","model_eran_part_defect_type","base.group_user",1,1,1,1
 "access_eran_area_found","access_eran_area_found","model_eran_area_found","base.group_user",1,1,1,1

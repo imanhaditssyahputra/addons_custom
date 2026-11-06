@@ -28,6 +28,7 @@ class EranProductionReport(models.Model):
     lot_id = fields.Many2one('stock.lot', string="Lot", related='workorder_id.finished_lot_id')
     # code baru
     category_group_id = fields.Many2one('eran.category.group', string='Category Group')
+    product_group_id = fields.Many2one('eran.product.group', string='Product Group')
     workcenter_group_id = fields.Many2one('eran.work.center.group', related='mesin.workcenter_group_id', store=True, string="Work Center Group", readonly=True)
     
     def init(self):
@@ -41,6 +42,7 @@ class EranProductionReport(models.Model):
                             production.date_planned_start as date,
                             production.product_id as product_id,
                             pt.category_group_id as category_group_id,
+                            pt.product_group_id as product_group_id,
                             workorder.name as operation,
                             workorder.workcenter_id as mesin,
                             workorder.time_cycle as time_cycle,
